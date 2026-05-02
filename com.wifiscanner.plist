@@ -14,11 +14,8 @@
   <!-- Start immediately on login -->
   <key>RunAtLoad</key><true/>
 
-  <!-- Restart whenever the process exits (including normal Quit) -->
-  <key>KeepAlive</key><true/>
-
-  <!-- Wait 8 s before restarting so sockets have time to fully close -->
-  <key>ThrottleInterval</key><integer>8</integer>
+  <!-- Do NOT keep alive — start at login, stay quit when user closes -->
+  <key>KeepAlive</key><false/>
 
   <key>StandardOutPath</key><string>/tmp/netscan.log</string>
   <key>StandardErrorPath</key><string>/tmp/netscan.err</string>
