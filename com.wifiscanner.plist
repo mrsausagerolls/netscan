@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.wifiscanner</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <!-- Adjust these paths to match your installation -->
+    <string>/Users/YOUR_USERNAME/wifi-scanner/.venv/bin/python3</string>
+    <string>/Users/YOUR_USERNAME/wifi-scanner/app.py</string>
+  </array>
+
+  <!-- Start immediately on login -->
+  <key>RunAtLoad</key><true/>
+
+  <!-- Restart whenever the process exits (including normal Quit) -->
+  <key>KeepAlive</key><true/>
+
+  <!-- Wait 8 s before restarting so sockets have time to fully close -->
+  <key>ThrottleInterval</key><integer>8</integer>
+
+  <key>StandardOutPath</key><string>/tmp/netscan.log</string>
+  <key>StandardErrorPath</key><string>/tmp/netscan.err</string>
+</dict>
+</plist>

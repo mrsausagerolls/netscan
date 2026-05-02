@@ -1,7 +1,9 @@
 """Local web dashboard — serves on http://localhost:8765"""
 
 import json
+import socket
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 PORT = 8765
@@ -526,10 +528,28 @@ class _Handler(BaseHTTPRequestHandler):
         pass
 
 
+class _Server(HTTPServer):
+    """HTTPServer with SO_REUSEPORT so a restarted process can bind immediately."""
+    allow_reuse_address = True
+    allow_reuse_port    = True
+
+
 def start(store, get_state, on_known_change=None, port: int = PORT):
     _Handler.store            = store
     _Handler.get_state        = get_state
     _Handler.on_known_change  = on_known_change
-    server = HTTPServer(("127.0.0.1", port), _Handler)
+
+    # Retry binding for up to 15 s in case the previous instance's socket is
+    # still in TIME_WAIT after a rapid launchd restart.
+    deadline = time.monotonic() + 15
+    while True:
+        try:
+            server = _Server(("127.0.0.1", port), _Handler)
+            break
+        except OSError:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(1)
+
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return port
