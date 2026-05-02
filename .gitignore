@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+
+# py2app build artifacts
+build/
+dist/
+
+# User data — never commit device lists or personal config
+data/
+
+# macOS
+.DS_Store
+
+# Packaging output
+*.dmg
+*.pkg

@@ -1,0 +1,5 @@
+scapy>=2.5.0
+rich>=13.0.0
+mac-vendor-lookup>=0.1.11
+rumps>=0.4.0
+pyobjc-framework-CoreWLAN>=10.0
