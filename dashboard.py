@@ -400,7 +400,11 @@ function renderDevices(devices) {
       +`<td><div class="sc"><span class="sd ${dc}"></span><span class="sl ${dc}">${lbl}</span></div></td>`
       +`<td><div class="ipc"><span class="ipv">${d.ip}</span>${cpBtn(d.ip)}</div></td>`
       +`<td><span class="macv">${d.mac}</span> ${cpBtn(d.mac)}</td>`
-      +`<td><span class="vv">${d.vendor&&d.vendor!='—'?d.vendor:'<span style="color:var(--text3)">—</span>'}</span></td>`
+      +`<td><span class="vv">${(()=>{
+        if(d.vendor&&d.vendor!='—') return d.vendor;
+        if(d.fingerprint) return `<span style="color:var(--accent);font-style:italic">${d.fingerprint}</span>`;
+        return '<span style="color:var(--text3)">—</span>';
+      })()}</span></td>`
       +`<td>${fmtLat(d.latency)}</td>`
       +`<td><div class="ports">${ports||'<span style="color:var(--text3);font-size:10px">—</span>'}</div></td>`
       +`<td><span class="ts">${fmtTs(d.first_seen)}</span></td>`

@@ -22,10 +22,11 @@ OPTIONS = {
         "mac_vendor_lookup",
         "objc",
         "CoreWLAN",
+        "CoreLocation",
         "SystemConfiguration",
     ],
     "includes": ["scanner", "store", "dashboard", "wol"],
-    "excludes": ["tkinter", "unittest", "email", "html", "http", "xmlrpc"],
+    "excludes": ["tkinter", "unittest", "xmlrpc"],
 }
 
 setup(

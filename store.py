@@ -78,6 +78,12 @@ class DeviceStore:
                 self._seen[mac]["ports"] = ports
                 self._save("seen.json", self._seen)
 
+    def update_fingerprint(self, mac: str, hints: dict):
+        with self._lock:
+            if mac in self._seen:
+                self._seen[mac]["fingerprint"] = hints
+                self._save("seen.json", self._seen)
+
     @property
     def all_seen(self) -> dict:
         with self._lock:

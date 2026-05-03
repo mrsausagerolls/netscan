@@ -18,7 +18,11 @@ PROBE_PORTS = {
     8080: "HTTP-alt",
     8883: "MQTT",
     9100: "Print",
+    1900: "SSDP",
+    5353: "mDNS",
     5000: "UPnP",
+    137:  "NetBIOS",
+    445:  "SMB",
 }
 
 # ── Dependency check ─────────────────────────────────────────────────────────
@@ -167,6 +171,145 @@ def scan_ports(ip: str) -> list[int]:
     with ThreadPoolExecutor(max_workers=len(PROBE_PORTS)) as ex:
         hits = {port: ex.submit(_port_open, ip, port) for port in PROBE_PORTS}
     return sorted(port for port, f in hits.items() if f.result())
+
+
+def _mdns_lookup(ip: str) -> str | None:
+    """Query mDNS for a .local hostname via reverse lookup."""
+    try:
+        rev = ".".join(reversed(ip.split("."))) + ".in-addr.arpa"
+        r = subprocess.run(
+            ["dns-sd", "-timeout", "1", "-Q", rev, "PTR"],
+            capture_output=True, text=True, timeout=3,
+        )
+        m = re.search(r"(\S+\.local\.?)", r.stdout)
+        if m:
+            return m.group(1).rstrip(".")
+    except Exception:
+        pass
+    return None
+
+
+def _http_fingerprint(ip: str, port: int, tls: bool = False) -> tuple[str, str]:
+    """Return (Server header, page title) from HTTP/HTTPS."""
+    import urllib.request, ssl
+    try:
+        scheme = "https" if tls else "http"
+        ctx = ssl.create_default_context() if tls else None
+        if ctx:
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        req = urllib.request.Request(
+            f"{scheme}://{ip}:{port}/",
+            headers={"User-Agent": "NetScan/1.0"},
+        )
+        resp = urllib.request.urlopen(req, timeout=2, context=ctx)
+        server = resp.headers.get("Server", "")
+        body = resp.read(4096).decode("utf-8", errors="ignore")
+        title_m = re.search(r"<title[^>]*>([^<]{1,80})</title>", body, re.I)
+        return server.strip(), (title_m.group(1).strip() if title_m else "")
+    except Exception:
+        return "", ""
+
+
+def _fetch_upnp_desc(url: str) -> str | None:
+    """Fetch UPnP device description XML and return friendlyName or modelName."""
+    import urllib.request
+    try:
+        body = urllib.request.urlopen(url, timeout=2).read(8192).decode("utf-8", errors="ignore")
+        for tag in ("friendlyName", "modelName", "manufacturer"):
+            m = re.search(rf"<{tag}>([^<]+)</{tag}>", body)
+            if m and m.group(1).strip():
+                return m.group(1).strip()
+    except Exception:
+        pass
+    return None
+
+
+def _ssdp_probe(ip: str, timeout: float = 1.5) -> str | None:
+    """Send unicast SSDP M-SEARCH and parse the UPnP device description."""
+    msg = (
+        "M-SEARCH * HTTP/1.1\r\n"
+        f"HOST: {ip}:1900\r\n"
+        'MAN: "ssdp:discover"\r\n'
+        "MX: 1\r\n"
+        "ST: ssdp:all\r\n\r\n"
+    ).encode()
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(timeout)
+        s.sendto(msg, (ip, 1900))
+        data, _ = s.recvfrom(2048)
+        s.close()
+        resp = data.decode("utf-8", errors="ignore")
+        loc = re.search(r"(?i)LOCATION:\s*(\S+)", resp)
+        if loc:
+            name = _fetch_upnp_desc(loc.group(1).strip())
+            if name:
+                return name
+        srv = re.search(r"(?i)SERVER:\s*(.+)", resp)
+        return srv.group(1).strip() if srv else None
+    except Exception:
+        return None
+
+
+def _smb_name(ip: str) -> str | None:
+    """Try to grab the NetBIOS/SMB machine name."""
+    try:
+        r = subprocess.run(
+            ["nmblookup", "-A", ip],
+            capture_output=True, text=True, timeout=3,
+        )
+        m = re.search(r"^\s+(\S+)\s+<00>", r.stdout, re.M)
+        return m.group(1).strip() if m else None
+    except Exception:
+        return None
+
+
+def probe_device(ip: str, mac: str, open_ports: list[int]) -> dict:
+    """Run identification probes and return a dict of hints."""
+    hints: dict[str, str] = {}
+
+    # mDNS — most useful for Apple/randomized-MAC devices
+    mdns = _mdns_lookup(ip)
+    if mdns:
+        hints["mdns"] = mdns
+
+    # HTTP fingerprinting
+    if 80 in open_ports:
+        server, title = _http_fingerprint(ip, 80)
+        if title:   hints["http_title"]  = title
+        if server:  hints["http_server"] = server
+    if 443 in open_ports:
+        server, title = _http_fingerprint(ip, 443, tls=True)
+        if title:   hints["https_title"]  = title
+        if server:  hints["https_server"] = server
+    if 8080 in open_ports:
+        server, title = _http_fingerprint(ip, 8080)
+        if title:   hints["http8080_title"]  = title
+        if server:  hints["http8080_server"] = server
+
+    # SSDP / UPnP
+    ssdp = _ssdp_probe(ip)
+    if ssdp:
+        hints["ssdp"] = ssdp
+
+    # NetBIOS / SMB
+    if 137 in open_ports or 445 in open_ports:
+        smb = _smb_name(ip)
+        if smb:
+            hints["smb"] = smb
+
+    return hints
+
+
+def best_fingerprint(hints: dict) -> str:
+    """Pick the most human-readable identification string from probe hints."""
+    for key in ("mdns", "ssdp", "smb", "http_title", "https_title",
+                "http8080_title", "http_server", "https_server"):
+        val = hints.get(key, "")
+        if val and val not in ("—", ""):
+            return val
+    return ""
 
 
 def enrich(devices: list[dict], local_ip: str, skip_vendor: bool = False) -> list[dict]:
