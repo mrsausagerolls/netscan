@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import rumps
 import dashboard
-from scanner import do_scan, enrich, scan_ports, get_wifi_info
+from scanner import do_scan, enrich, scan_ports, probe_device, best_fingerprint, get_wifi_info
 from store import DeviceStore
 from wol import wake
 
@@ -40,9 +40,30 @@ def _wifi_iface() -> str:
     return "en0"
 
 
+_loc_mgr = None  # keep a reference so it isn't GC'd before the callback fires
+
+def _location_authorized() -> bool:
+    """Return True if Location Services are granted."""
+    try:
+        from CoreLocation import CLLocationManager
+        # macOS: 0=notDetermined, 1=restricted, 2=denied, 3=authorizedAlways, 4=authorizedWhenInUse
+        return CLLocationManager.authorizationStatus() in (3, 4)
+    except Exception:
+        return False
+
+def _request_location_permission():
+    """Call requestWhenInUseAuthorization so NetScan appears in System Settings → Location Services."""
+    global _loc_mgr
+    try:
+        from CoreLocation import CLLocationManager, kCLAuthorizationStatusNotDetermined
+        if CLLocationManager.authorizationStatus() == kCLAuthorizationStatusNotDetermined:
+            _loc_mgr = CLLocationManager.alloc().init()
+            _loc_mgr.requestWhenInUseAuthorization()
+    except Exception:
+        pass
+
+
 def _current_ssid() -> str | None:
-    # CoreWLAN is the most reliable — works when Location Services
-    # is granted to Python in System Settings → Privacy → Location Services.
     try:
         from CoreWLAN import CWWiFiClient
         ssid = CWWiFiClient.sharedWiFiClient().interface().ssid()
@@ -51,7 +72,6 @@ def _current_ssid() -> str | None:
     except Exception:
         pass
 
-    # Fallback: networksetup with the correct dynamic interface name.
     iface = _wifi_iface()
     out = subprocess.run(
         ["networksetup", "-getairportnetwork", iface],
@@ -85,14 +105,14 @@ class WiFiScannerApp(rumps.App):
             f"Open Dashboard  ↗  localhost:{DASH_PORT}",
             callback=self._open_dashboard,
         )
-        self._rescan = rumps.MenuItem("Rescan Now", callback=self._on_rescan)
-        self._quit   = rumps.MenuItem("Quit",       callback=rumps.quit_application)
+        self._rescan   = rumps.MenuItem("Rescan Now", callback=self._on_rescan)
+        self._loc_item = rumps.MenuItem(
+            "⚠️  Allow Location Access for SSID →",
+            callback=self._open_location_settings,
+        )
+        self._quit = rumps.MenuItem("Quit", callback=rumps.quit_application)
 
-        self.menu = [
-            self._status, self._scan_time, None,
-            self._dash_item, None,
-            self._rescan, None, self._quit,
-        ]
+        self._build_menu()
 
         # Start HTTP dashboard
         dashboard.start(store, self._dash_state,
@@ -101,9 +121,31 @@ class WiFiScannerApp(rumps.App):
 
         # Main-thread timer to safely update NSMenu
         rumps.Timer(self._flush_pending, 0.5).start()
+        rumps.Timer(self._check_location, 5).start()
 
+        _request_location_permission()
         threading.Thread(target=self._monitor_loop, daemon=True).start()
         self._trigger_scan()
+
+    # ── Menu helpers ─────────────────────────────────────────────────────────
+
+    def _build_menu(self):
+        items = [self._status, self._scan_time, None, self._dash_item, None, self._rescan]
+        if not _location_authorized():
+            items += [None, self._loc_item]
+        items += [None, self._quit]
+        self.menu.clear()
+        for item in items:
+            self.menu.add(item)
+
+    def _open_location_settings(self, _=None):
+        subprocess.run(["open",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices"])
+
+    def _check_location(self, _=None):
+        """Periodically remove the location warning item once permission is granted."""
+        if _location_authorized() and self._loc_item.title in self.menu:
+            self._build_menu()
 
     # ── Dashboard state ───────────────────────────────────────────────────────
 
@@ -116,17 +158,19 @@ class WiFiScannerApp(rumps.App):
         seen = store.all_seen
         for d in sorted(devices, key=lambda x: tuple(int(p) for p in x["ip"].split("."))):
             rec = seen.get(d["mac"], {})
+            fp_hints = rec.get("fingerprint", {})
             enriched.append({
-                "ip":         d["ip"],
-                "mac":        d["mac"],
-                "hostname":   d.get("hostname", "—"),
-                "vendor":     d.get("vendor", "—"),
-                "latency":    d.get("latency"),
-                "ports":      rec.get("ports", []),
-                "first_seen": rec.get("first_seen"),
-                "is_known":   store.is_known(d["mac"]),    # always live from store
-                "known_name": store.known_name(d["mac"]),  # always live from store
-                "me":         d.get("me", False),
+                "ip":          d["ip"],
+                "mac":         d["mac"],
+                "hostname":    d.get("hostname", "—"),
+                "vendor":      d.get("vendor", "—"),
+                "fingerprint": best_fingerprint(fp_hints),
+                "latency":     d.get("latency"),
+                "ports":       rec.get("ports", []),
+                "first_seen":  rec.get("first_seen"),
+                "is_known":    store.is_known(d["mac"]),
+                "known_name":  store.known_name(d["mac"]),
+                "me":          d.get("me", False),
             })
         return {
             "ssid":      ssid or "",
@@ -231,6 +275,10 @@ class WiFiScannerApp(rumps.App):
             try:
                 ports = scan_ports(d["ip"])
                 store.update_ports(d["mac"], ports)
+                # Run identification probes after ports are known
+                hints = probe_device(d["ip"], d["mac"], ports)
+                if hints:
+                    store.update_fingerprint(d["mac"], hints)
             except Exception:
                 pass
 
