@@ -297,6 +297,8 @@ class _Handler(BaseHTTPRequestHandler):
             "wan_exposed": self.store.wan_mappings_for(device.get("ip") or ""),
             "sightings": [dict(r) for r in sightings],
             "alerts":    [dict(r) for r in alerts],
+            "bandwidth": self.store.bandwidth_for(mac, since_seconds=3600),
+            "dns":       self.store.dns_queries_for(mac, limit=100),
         }
         self._send(200, "application/json", json.dumps(story).encode())
 

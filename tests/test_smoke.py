@@ -910,6 +910,132 @@ def test_routerctl_openwrt_block_is_idempotent(monkeypatch):
     assert calls == []   # already present, no write
 
 
+# ── threats (threat-intel list) ────────────────────────────────────────────
+
+def test_threats_seed_file_created_if_missing(tmp_path):
+    import threats
+    p = tmp_path / "threats.txt"
+    tl = threats.ThreatList(p)
+    assert p.exists()
+    assert "torproject.org" in tl.domains()
+
+
+def test_threats_exact_and_suffix_match(tmp_path):
+    import threats
+    p = tmp_path / "threats.txt"
+    p.write_text("# header\nbad.example\nphish.test\n")
+    tl = threats.ThreatList(p)
+    assert tl.matches("bad.example") == "bad.example"
+    assert tl.matches("sub.bad.example") == "bad.example"
+    assert tl.matches("phish.test") == "phish.test"
+    assert tl.matches("bad-example.com") is None  # NOT a suffix match
+    assert tl.matches("safe.com") is None
+    assert tl.matches("") is None
+
+
+def test_threats_comments_and_blanks_ignored(tmp_path):
+    import threats
+    p = tmp_path / "threats.txt"
+    p.write_text("\n# a comment\n\nfoo.example\n  bar.example  \n")
+    tl = threats.ThreatList(p)
+    domains = tl.domains()
+    assert "foo.example" in domains
+    assert "bar.example" in domains
+    assert "# a comment" not in domains
+
+
+def test_threats_reload_on_mtime_change(tmp_path):
+    import threats, time as _t
+    p = tmp_path / "threats.txt"
+    p.write_text("one.example\n")
+    tl = threats.ThreatList(p)
+    assert tl.matches("one.example") is not None
+
+    _t.sleep(0.01)
+    p.write_text("two.example\n")
+    import os as _os
+    _os.utime(p, None)   # force mtime tick
+    tl.reload_if_stale()
+    assert tl.matches("one.example") is None
+    assert tl.matches("two.example") is not None
+
+
+# ── sniffer (no real packets — just status / parsers) ──────────────────────
+
+def test_sniffer_status_default_disabled():
+    import sniffer
+    s = sniffer.status()
+    assert s["enabled"] is False
+    assert s["running"] is False
+    assert "packets" in s
+
+
+def test_sniffer_can_capture_returns_helpful_reason_when_no_bpf(monkeypatch):
+    import sniffer
+    monkeypatch.setattr(sniffer.os, "open",
+                        lambda *a, **kw: (_ for _ in ()).throw(PermissionError("nope")))
+    ok, reason = sniffer._can_capture()
+    assert ok is False
+    assert "enable_sniffer" in reason
+
+
+def test_sniffer_bump_credits_in_and_out():
+    import sniffer
+    sniffer._counters.clear()
+    sniffer._bump("aa:bb:cc:dd:ee:ff", "in", 100)
+    sniffer._bump("AA:BB:CC:DD:EE:FF", "out", 250)
+    sniffer._bump("11:22:33:44:55:66", "out", 50)
+    snap = sniffer._snapshot_and_reset()
+    assert snap["AA:BB:CC:DD:EE:FF"].bytes_in == 100
+    assert snap["AA:BB:CC:DD:EE:FF"].bytes_out == 250
+    assert snap["11:22:33:44:55:66"].bytes_out == 50
+    # Snapshot resets in-memory counters.
+    assert sniffer._counters == {}
+
+
+# ── store bandwidth/DNS roundtrips ─────────────────────────────────────────
+
+def test_store_bandwidth_roundtrip(tmp_path):
+    import store
+    s = store.DeviceStore(data_dir=tmp_path)
+    s.record_bandwidth_samples([
+        ("AA:BB:CC:DD:EE:FF", 1024, 2048),
+        ("11:22:33:44:55:66", 500, 0),
+    ])
+    rows = s.bandwidth_for("AA:BB:CC:DD:EE:FF")
+    assert len(rows) == 1
+    assert rows[0]["bytes_in"] == 1024
+    assert rows[0]["bytes_out"] == 2048
+    # Cross-mac isolation
+    assert len(s.bandwidth_for("FF:FF:FF:FF:FF:FF")) == 0
+
+
+def test_store_bandwidth_empty_input_is_noop(tmp_path):
+    import store
+    s = store.DeviceStore(data_dir=tmp_path)
+    s.record_bandwidth_samples([])
+    assert s.bandwidth_for("AA:BB:CC:DD:EE:FF") == []
+
+
+def test_store_dns_query_roundtrip(tmp_path):
+    import store
+    s = store.DeviceStore(data_dir=tmp_path)
+    s.record_dns_query("AA:BB:CC:DD:EE:FF", "example.com", 1)
+    s.record_dns_query("AA:BB:CC:DD:EE:FF", "tracker.example", 1)
+    rows = s.dns_queries_for("AA:BB:CC:DD:EE:FF", limit=10)
+    qnames = [r["qname"] for r in rows]
+    assert "example.com" in qnames
+    assert "tracker.example" in qnames
+
+
+def test_store_dns_query_skips_empty_inputs(tmp_path):
+    import store
+    s = store.DeviceStore(data_dir=tmp_path)
+    s.record_dns_query("", "example.com", 1)
+    s.record_dns_query("AA:BB:CC:DD:EE:FF", "", 1)
+    assert s.dns_queries_for("AA:BB:CC:DD:EE:FF") == []
+
+
 def _fake_arp_run(cmd, *a, **kw):
     """Shared subprocess.run mock for scanner ARP tests."""
     class R:

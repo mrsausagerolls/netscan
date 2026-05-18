@@ -446,3 +446,15 @@ textarea#hook-script:focus{border-color:var(--cyan)}
   font-family:var(--mono);font-size:12px;padding:7px 11px;border-radius:6px;outline:none;
 }
 .setting-row input[type="password"]:focus{border-color:var(--cyan)}
+
+.bw-summary{font-family:var(--mono);font-size:11px;color:var(--text2);margin-bottom:8px}
+.bw-summary strong{color:var(--cyan)}
+.bw-chart{
+  display:flex;align-items:flex-end;gap:2px;
+  height:44px;padding:4px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;
+  overflow-x:auto;
+}
+.bw-pair{display:flex;flex-direction:column-reverse;gap:1px;min-width:6px;cursor:default}
+.bw-bar{display:block;width:6px;border-radius:1px}
+.bw-bar.bw-in{background:var(--cyan)}
+.bw-bar.bw-out{background:var(--purple)}

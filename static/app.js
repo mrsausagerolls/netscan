@@ -668,6 +668,8 @@ async function openDeviceStory(mac) {
       <div class="dc-ports">${ports}</div>
       <h3>Recent sightings (${sightings.length})</h3>
       <div class="dstory-list">${sightingsHtml}</div>
+      ${renderBandwidthBlock(story.bandwidth || [])}
+      ${renderDnsBlock(story.dns || [])}
       <h3>Alerts triggered (${alerts.length})</h3>
       <div class="dstory-list">${alertsHtml}</div>
     `;
@@ -689,6 +691,48 @@ async function openDeviceStory(mac) {
     wireRouter("router-unblock-mac", "/api/router/unblock", "unblock");
   } catch (e) { /* swallow */ }
 }
+function fmtBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function renderBandwidthBlock(samples) {
+  if (!samples.length) {
+    return `<h3>Bandwidth (last hour)</h3>
+            <div class="empty">No data yet — bandwidth monitoring requires the passive sniffer (Settings → Sniffer status).</div>`;
+  }
+  const totalIn  = samples.reduce((s, r) => s + (r.bytes_in  || 0), 0);
+  const totalOut = samples.reduce((s, r) => s + (r.bytes_out || 0), 0);
+  const max = Math.max(...samples.map(r => Math.max(r.bytes_in, r.bytes_out)), 1);
+  const bars = samples.slice(-60).map(r => {
+    const inH  = Math.max(2, Math.round((r.bytes_in  / max) * 36));
+    const outH = Math.max(2, Math.round((r.bytes_out / max) * 36));
+    return `<span class="bw-pair" title="${new Date(r.ts * 1000).toLocaleTimeString()}: in ${fmtBytes(r.bytes_in)} / out ${fmtBytes(r.bytes_out)}">
+              <span class="bw-bar bw-in"  style="height:${inH}px"></span>
+              <span class="bw-bar bw-out" style="height:${outH}px"></span>
+            </span>`;
+  }).join("");
+  return `<h3>Bandwidth (last hour)</h3>
+          <div class="bw-summary">Down: <strong>${fmtBytes(totalIn)}</strong>  ·  Up: <strong>${fmtBytes(totalOut)}</strong></div>
+          <div class="bw-chart">${bars}</div>`;
+}
+
+function renderDnsBlock(queries) {
+  if (!queries.length) {
+    return `<h3>DNS lookups</h3>
+            <div class="empty">No DNS logged for this device. Requires the passive sniffer.</div>`;
+  }
+  const rows = queries.slice(0, 25).map(q => `
+    <div class="dstory-row">
+      <span class="dstory-ts">${escHtml(new Date(q.ts * 1000).toLocaleString())}</span>
+      <span class="dstory-ip">${escHtml(q.qname)}</span>
+    </div>`).join("");
+  return `<h3>DNS lookups (${queries.length})</h3>
+          <div class="dstory-list">${rows}</div>`;
+}
+
 function closeDeviceDrawer() {
   $("#device-drawer").hidden = true;
   if ($("#alert-drawer").hidden) $("#drawer-scrim").hidden = true;

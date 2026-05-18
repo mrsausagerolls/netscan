@@ -112,6 +112,26 @@ CREATE TABLE IF NOT EXISTS health_snapshots (
     reasons  TEXT NOT NULL   -- JSON array of {weight, label}
 );
 CREATE INDEX IF NOT EXISTS idx_health_ts ON health_snapshots(ts DESC);
+
+CREATE TABLE IF NOT EXISTS bandwidth_samples (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts         REAL NOT NULL,
+    mac        TEXT NOT NULL,
+    bytes_in   INTEGER NOT NULL DEFAULT 0,
+    bytes_out  INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_bw_mac_ts ON bandwidth_samples(mac, ts);
+CREATE INDEX IF NOT EXISTS idx_bw_ts ON bandwidth_samples(ts);
+
+CREATE TABLE IF NOT EXISTS dns_queries (
+    id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts     REAL NOT NULL,
+    mac    TEXT NOT NULL,
+    qname  TEXT NOT NULL,
+    qtype  INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_dns_mac_ts ON dns_queries(mac, ts);
+CREATE INDEX IF NOT EXISTS idx_dns_ts ON dns_queries(ts);
 """
 
 # Extra columns added in v2.1 on existing installs. Each entry:
@@ -455,6 +475,60 @@ class DeviceStore:
             "score": row["score"],
             "reasons": json.loads(row["reasons"]),
         }
+
+    # ── Bandwidth (passive sniffer) ──────────────────────────────────────────
+
+    def record_bandwidth_samples(self, samples: list[tuple[str, int, int]]):
+        """Batch-insert (mac, bytes_in, bytes_out) snapshots."""
+        if not samples:
+            return
+        now = time.time()
+        with self._tx() as db:
+            db.executemany(
+                "INSERT INTO bandwidth_samples(ts, mac, bytes_in, bytes_out) "
+                "VALUES(?,?,?,?)",
+                [(now, mac.upper(), bi, bo) for mac, bi, bo in samples],
+            )
+            # Cap: keep last 50k samples (≈ 35 days at 1 sample / device / min
+            # for a small home network).
+            db.execute(
+                "DELETE FROM bandwidth_samples WHERE id IN ("
+                " SELECT id FROM bandwidth_samples ORDER BY ts DESC LIMIT -1 OFFSET 50000"
+                ")"
+            )
+
+    def bandwidth_for(self, mac: str, since_seconds: int = 3600) -> list[dict]:
+        cutoff = time.time() - since_seconds
+        rows = self._q(
+            "SELECT ts, bytes_in, bytes_out FROM bandwidth_samples "
+            "WHERE mac=? AND ts>=? ORDER BY ts ASC",
+            (mac.upper(), cutoff),
+        )
+        return [dict(r) for r in rows]
+
+    # ── DNS queries (passive sniffer) ────────────────────────────────────────
+
+    def record_dns_query(self, mac: str, qname: str, qtype: int = 0):
+        if not mac or not qname:
+            return
+        with self._tx() as db:
+            db.execute(
+                "INSERT INTO dns_queries(ts, mac, qname, qtype) VALUES(?,?,?,?)",
+                (time.time(), mac.upper(), qname, qtype),
+            )
+            db.execute(
+                "DELETE FROM dns_queries WHERE id IN ("
+                " SELECT id FROM dns_queries ORDER BY ts DESC LIMIT -1 OFFSET 100000"
+                ")"
+            )
+
+    def dns_queries_for(self, mac: str, limit: int = 100) -> list[dict]:
+        rows = self._q(
+            "SELECT ts, qname, qtype FROM dns_queries WHERE mac=? "
+            "ORDER BY ts DESC LIMIT ?",
+            (mac.upper(), limit),
+        )
+        return [dict(r) for r in rows]
 
     # ── Scan history ─────────────────────────────────────────────────────────
 

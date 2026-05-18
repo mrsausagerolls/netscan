@@ -20,6 +20,7 @@ import health
 import igd
 import notify
 import security
+import sniffer
 import webhooks
 from scanner import do_scan, enrich, scan_ports, probe_device, best_fingerprint, get_wifi_info
 from store import DeviceStore
@@ -182,6 +183,7 @@ class InsApp(rumps.App):
         threading.Thread(target=self._monitor_loop, daemon=True).start()
         threading.Thread(target=self._update_loop, daemon=True).start()
         threading.Thread(target=self._wan_refresh_loop, daemon=True).start()
+        threading.Thread(target=self._start_sniffer_when_ready, daemon=True).start()
         self._trigger_scan()
 
     # ── Menu helpers ─────────────────────────────────────────────────────────
@@ -275,6 +277,7 @@ class InsApp(rumps.App):
                 "router_ssh_port":        store.get_setting("router_ssh_port", "22"),
                 "router_iface":           store.get_setting("router_iface", "0"),
             },
+            "sniffer":   sniffer.status(),
             "app_name":   __app_name__,
             "version":    __version__,
         }
@@ -643,6 +646,32 @@ class InsApp(rumps.App):
             except Exception:
                 pass
             time.sleep(WAN_REFRESH_INTERVAL)
+
+    # ── Sniffer bootstrap ────────────────────────────────────────────────────
+
+    def _start_sniffer_when_ready(self):
+        """Wait for the first scan so we know our interface + local MAC, then
+        start the passive sniffer. Never raises — failure is recorded in
+        sniffer.status() and surfaced by the dashboard."""
+        for _ in range(60):  # up to 60s
+            try:
+                iface, local_ip, _ = get_wifi_info()
+            except Exception:
+                time.sleep(1)
+                continue
+            local_mac = self._local_mac_for(iface)
+            sniffer.start(store, iface=iface, local_mac=local_mac)
+            return
+
+    def _local_mac_for(self, iface: str) -> str:
+        try:
+            out = subprocess.run(
+                ["ifconfig", iface], capture_output=True, text=True, timeout=2,
+            ).stdout
+            m = re.search(r"ether ([0-9a-f:]{17})", out)
+            return m.group(1).upper() if m else ""
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return ""
 
     # ── Update check ──────────────────────────────────────────────────────────
 
