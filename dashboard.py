@@ -5,6 +5,7 @@ import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import urlparse
 
 PORT = 8765
 
@@ -65,6 +66,7 @@ header::after{content:'';position:absolute;bottom:0;left:0;right:0;height:1px;ba
 .live-dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:livepulse 2s infinite}
 @keyframes livepulse{0%{box-shadow:0 0 0 0 rgba(13,204,114,.6)}70%{box-shadow:0 0 0 5px rgba(13,204,114,0)}100%{box-shadow:0 0 0 0 rgba(13,204,114,0)}}
 .scantime{font-family:var(--mono);font-size:10px;color:var(--text3)}
+.byline{font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--text3);padding-left:12px;border-left:1px solid var(--border)}
 
 /* ── LAYOUT ── */
 main{display:grid;grid-template-columns:1fr 308px;flex:1;overflow:hidden}
@@ -216,6 +218,7 @@ textarea:focus{outline:none;border-color:var(--cyan)}
   <div class="hright">
     <span class="scantime" id="h-ts"></span>
     <div class="live-pill"><span class="live-dot"></span><span id="h-count">—</span> devices</div>
+    <span class="byline">Inglorious Labs</span>
   </div>
 </header>
 
@@ -494,37 +497,44 @@ class _Handler(BaseHTTPRequestHandler):
         return any(origin == a or origin.startswith(a + "/") for a in self.allowed_origins)
 
     def do_GET(self):
-        if self.path == "/":
-            self._send(200, "text/html", _HTML.encode())
-        elif self.path == "/api/state":
+        path = urlparse(self.path).path
+        if path == "/api/state":
             self._send(200, "application/json", json.dumps(self.get_state()).encode())
-        elif self.path == "/api/history":
+        elif path == "/api/history":
             self._send(200, "application/json", json.dumps(self.store.history).encode())
+        elif path == "/favicon.ico":
+            # Silence browser favicon requests — they don't need an asset.
+            self._send(204, "image/x-icon", b"")
+        elif path.startswith("/api/"):
+            self._send(404, "application/json", b'{"error":"not found"}')
         else:
-            self._send(404, "text/plain", b"Not found")
+            # Any other path (incl. stale tabs on /dashboard, /index.html, /?foo)
+            # serves the dashboard. SPA-style fallback prevents user-visible 404s.
+            self._send(200, "text/html", _HTML.encode())
 
     def do_POST(self):
         if not self._origin_ok():
             self._send(403, "application/json", b'{"error":"forbidden origin"}')
             return
 
+        path = urlparse(self.path).path
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length) or b"{}")
 
-        if self.path == "/api/known/add":
+        if path == "/api/known/add":
             self.store.add_known(body.get("mac", ""), body.get("name", ""))
             if self.on_known_change:
                 self.on_known_change()
             self._send(200, "application/json", b'{"ok":true}')
-        elif self.path == "/api/known/remove":
+        elif path == "/api/known/remove":
             self.store.remove_known(body.get("mac", ""))
             if self.on_known_change:
                 self.on_known_change()
             self._send(200, "application/json", b'{"ok":true}')
-        elif self.path == "/api/hook":
+        elif path == "/api/hook":
             self.store.set_hook_script(body.get("script", ""))
             self._send(200, "application/json", b'{"ok":true}')
-        elif self.path == "/api/wol":
+        elif path == "/api/wol":
             try:
                 from wol import wake
                 wake(body.get("mac", ""))
@@ -532,7 +542,7 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send(500, "application/json", json.dumps({"error": str(e)}).encode())
         else:
-            self._send(404, "text/plain", b"Not found")
+            self._send(404, "application/json", b'{"error":"not found"}')
 
     def _send(self, code: int, ctype: str, body: bytes):
         self.send_response(code)
