@@ -4,6 +4,26 @@
 
 macOS menu-bar app that continuously scans your local WiFi network, shows all connected devices, and serves a live dashboard at `http://localhost:8765`.
 
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mrsausagerolls/netscan/main/get.sh | bash
+```
+
+One command. Clones to `~/.netscan`, sets up a Python venv, installs deps, and registers a LaunchAgent so NetScan starts on every login. Look for **📡** in your menubar when it's done.
+
+Requires macOS 13+, Python 3.11+, and git (`xcode-select --install` if missing).
+
+Environment overrides:
+- `NETSCAN_DIR=/custom/path` — install somewhere other than `~/.netscan`
+- `NETSCAN_NO_AUTOSTART=1` — skip the LaunchAgent (run manually instead)
+
+To uninstall:
+```bash
+launchctl unload ~/Library/LaunchAgents/com.wifiscanner.plist
+rm -rf ~/.netscan
+```
+
 ## Features
 
 - ARP scan (requires `sudo`) with automatic ping-sweep fallback
@@ -16,25 +36,16 @@ macOS menu-bar app that continuously scans your local WiFi network, shows all co
 - Auto-rescans every 5 s; detects network changes
 - In-app update check against GitHub Releases
 
-## Install from source
+## Manual install (alternative)
+
+If you'd rather not pipe a script to bash:
 
 ```bash
-git clone https://github.com/mrsausagerolls/netscan.git wifi-scanner
-cd wifi-scanner
+git clone https://github.com/mrsausagerolls/netscan.git ~/.netscan
+cd ~/.netscan
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-Run once to verify:
-
-```bash
-sudo python app.py
-```
-
-### Launch at login (LaunchAgent)
-
-```bash
 ./install.sh
 ```
 
@@ -44,7 +55,7 @@ sudo python app.py
 
 NetScan checks the GitHub Releases API every 6 hours (and once 10 s after startup). When a newer release exists, an `⬆️  Update available  ·  vX.Y.Z` item appears at the top of the menubar.
 
-- **Source install** (cloned + `install.sh`): click the item, confirm, and `update.sh` runs `git pull --ff-only` and restarts the LaunchAgent via `launchctl kickstart -k`. Logs to `/tmp/netscan-update.log`. To check manually: `./update.sh`.
+- **Source install** (via `get.sh` or `install.sh`): click the item, confirm, and `update.sh` runs `git pull --ff-only` and restarts the LaunchAgent via `launchctl kickstart -k`. Logs to `/tmp/netscan-update.log`. To check manually: `~/.netscan/update.sh`.
 - **DMG install** (`/Applications/NetScan.app`): click the item to open the release page; download and replace the .app.
 
 To cut a release: bump [version.py](version.py), tag `vX.Y.Z`, push the tag, and publish a GitHub Release at that tag (attach the DMG so DMG users can download directly).
