@@ -375,7 +375,19 @@ class _Server(HTTPServer):
 from socketserver import ThreadingMixIn
 
 class _ThreadedServer(ThreadingMixIn, _Server):
+    """Threaded server so /api/stream (SSE) connections don't block GET/POST
+    requests. We override handle_error to drop the routine
+    ConnectionResetError / BrokenPipeError noise that fills /tmp/ins.err
+    whenever a browser tab closes its SSE connection. Real exceptions still
+    get logged via the parent implementation."""
     daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        import sys
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ConnectionResetError, BrokenPipeError)):
+            return
+        super().handle_error(request, client_address)
 
 
 def start(store, get_state, on_known_change=None, port: int = PORT):
