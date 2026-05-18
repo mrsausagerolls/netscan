@@ -10,6 +10,17 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Promote this Python process to a "menubar-only accessory" before anything
+# else creates an NSApplication. Without this, the running process shows up
+# as "Python" in the Dock, the app switcher (⌘-Tab), and the Force Quit
+# dialog — confusing for an app that's only supposed to live in the menubar.
+# Accessory policy = no Dock entry, no app switcher entry, menubar only.
+try:
+    from AppKit import NSApplication                                    # type: ignore
+    NSApplication.sharedApplication().setActivationPolicy_(1)  # NSApplicationActivationPolicyAccessory
+except ImportError:
+    pass
+
 import rumps
 import actions
 import classify
@@ -109,6 +120,17 @@ def _current_ssid() -> str | None:
 
 def _copy(text: str):
     subprocess.run(["pbcopy"], input=text.encode(), check=True)
+
+
+def _read_keep_alive_status() -> bool:
+    """Source of truth for the "Keep in menubar" toggle: read the actual
+    LaunchAgent plist rather than trusting the settings table. Lets us catch
+    out-of-band edits made by an admin or by a previous install."""
+    try:
+        import launchd_agent
+        return launchd_agent.get_keep_alive()
+    except Exception:
+        return False
 
 
 def _local_computer_name() -> str:
@@ -276,6 +298,7 @@ class InsApp(rumps.App):
                 "router_site":            store.get_setting("router_site", "default"),
                 "router_ssh_port":        store.get_setting("router_ssh_port", "22"),
                 "router_iface":           store.get_setting("router_iface", "0"),
+                "keep_alive":             _read_keep_alive_status(),
             },
             "sniffer":   sniffer.status(),
             "app_name":   __app_name__,

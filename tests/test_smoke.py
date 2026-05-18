@@ -1036,6 +1036,92 @@ def test_store_dns_query_skips_empty_inputs(tmp_path):
     assert s.dns_queries_for("AA:BB:CC:DD:EE:FF") == []
 
 
+# ── launchd_agent (Keep in menubar / KeepAlive plist rewrite) ──────────────
+
+def test_launchd_agent_get_returns_false_when_plist_missing(monkeypatch, tmp_path):
+    import launchd_agent
+    monkeypatch.setattr(launchd_agent, "PLIST_PATH", tmp_path / "missing.plist")
+    assert launchd_agent.plist_exists() is False
+    assert launchd_agent.get_keep_alive() is False
+
+
+def test_launchd_agent_set_errors_helpfully_when_plist_missing(monkeypatch, tmp_path):
+    import launchd_agent
+    monkeypatch.setattr(launchd_agent, "PLIST_PATH", tmp_path / "missing.plist")
+    r = launchd_agent.set_keep_alive(True)
+    assert r["ok"] is False
+    assert "Install INS" in r["message"]
+
+
+def test_launchd_agent_roundtrips_keep_alive(monkeypatch, tmp_path):
+    import launchd_agent, plistlib
+    plist = tmp_path / "ka.plist"
+    plistlib.dump({
+        "Label": launchd_agent.LABEL,
+        "ProgramArguments": ["/usr/bin/true"],
+        "KeepAlive": False,
+    }, plist.open("wb"))
+    monkeypatch.setattr(launchd_agent, "PLIST_PATH", plist)
+    # Stub launchctl so the test doesn't actually load anything.
+    class Done:
+        returncode = 0; stdout = ""; stderr = ""
+    monkeypatch.setattr(launchd_agent.subprocess, "run", lambda *a, **kw: Done())
+    assert launchd_agent.get_keep_alive() is False
+    r = launchd_agent.set_keep_alive(True)
+    assert r["ok"] is True
+    assert launchd_agent.get_keep_alive() is True
+    r = launchd_agent.set_keep_alive(False)
+    assert r["ok"] is True
+    assert launchd_agent.get_keep_alive() is False
+
+
+def test_launchd_agent_set_preserves_program_arguments(monkeypatch, tmp_path):
+    """The user's plist has paths to their venv python + app.py. The
+    KeepAlive flip must not touch ProgramArguments."""
+    import launchd_agent, plistlib
+    plist = tmp_path / "preserve.plist"
+    original_args = ["/Users/me/.netscan/.venv/bin/python3",
+                     "/Users/me/.netscan/app.py"]
+    plistlib.dump({
+        "Label": launchd_agent.LABEL,
+        "ProgramArguments": original_args,
+        "KeepAlive": False,
+        "RunAtLoad": True,
+        "StandardOutPath": "/tmp/ins.log",
+    }, plist.open("wb"))
+    monkeypatch.setattr(launchd_agent, "PLIST_PATH", plist)
+    class Done:
+        returncode = 0; stdout = ""; stderr = ""
+    monkeypatch.setattr(launchd_agent.subprocess, "run", lambda *a, **kw: Done())
+    launchd_agent.set_keep_alive(True)
+    with plist.open("rb") as fp:
+        data = plistlib.load(fp)
+    assert data["ProgramArguments"] == original_args
+    assert data["RunAtLoad"] is True
+    assert data["StandardOutPath"] == "/tmp/ins.log"
+    assert data["KeepAlive"] is True
+
+
+def test_launchd_agent_get_handles_dict_keep_alive(monkeypatch, tmp_path):
+    """Hand-edited plists sometimes use the <dict> form of KeepAlive."""
+    import launchd_agent, plistlib
+    plist = tmp_path / "dict.plist"
+    plistlib.dump({
+        "Label": launchd_agent.LABEL,
+        "ProgramArguments": ["/usr/bin/true"],
+        "KeepAlive": {"SuccessfulExit": False},
+    }, plist.open("wb"))
+    monkeypatch.setattr(launchd_agent, "PLIST_PATH", plist)
+    # Any truthy sub-value counts as "on".
+    assert launchd_agent.get_keep_alive() is False  # SuccessfulExit=False is the only entry
+    plistlib.dump({
+        "Label": launchd_agent.LABEL,
+        "ProgramArguments": ["/usr/bin/true"],
+        "KeepAlive": {"NetworkState": True},
+    }, plist.open("wb"))
+    assert launchd_agent.get_keep_alive() is True
+
+
 def _fake_arp_run(cmd, *a, **kw):
     """Shared subprocess.run mock for scanner ARP tests."""
     class R:

@@ -216,6 +216,21 @@
       <button id="hook-save" class="btn">Save hook</button>
     </div>
 
+    <div class="pbar"><h2>Behavior</h2></div>
+    <div class="section">
+      <label class="setting-row">
+        <input type="checkbox" id="setting-keep-alive">
+        <span>
+          <strong>Keep INS in the menubar</strong> — auto-restart if I Quit
+          <span class="setting-hint">Without this, clicking Quit removes the 📡 icon until next login. With this on, launchd relaunches INS immediately.</span>
+        </span>
+      </label>
+      <div class="setting-row">
+        <button id="keep-alive-save" class="btn btn-primary">Apply</button>
+        <span class="settings-status" id="keep-alive-status"></span>
+      </div>
+    </div>
+
     <div class="pbar"><h2>Voice &amp; Apple Shortcuts</h2></div>
     <div class="section">
       <p class="help">

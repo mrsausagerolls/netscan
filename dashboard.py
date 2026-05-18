@@ -234,10 +234,21 @@ class _Handler(BaseHTTPRequestHandler):
                 "shortcut_on_alert", "first_run_done",
                 "router_kind", "router_host", "router_user", "router_pass",
                 "router_site", "router_ssh_port", "router_iface",
+                "keep_alive",
             }
+            keep_alive_change = None
             for key, val in (body or {}).items():
                 if key in allowed:
+                    if key == "keep_alive":
+                        keep_alive_change = (str(val) == "1")
                     self.store.set_setting(key, str(val))
+            if keep_alive_change is not None:
+                import launchd_agent
+                result = launchd_agent.set_keep_alive(keep_alive_change)
+                if not result["ok"]:
+                    self._send(502, "application/json",
+                               json.dumps({"error": result["message"]}).encode())
+                    return
             self._ok()
             return
         if path == "/api/router/test":

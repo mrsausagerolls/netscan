@@ -426,6 +426,7 @@ textarea#hook-script:focus{border-color:var(--cyan)}
   content:"✓";position:absolute;top:-3px;left:1px;color:var(--bg);font-size:13px;font-weight:600;
 }
 .settings-status{font-family:var(--mono);font-size:10px;color:var(--green);letter-spacing:.06em}
+.setting-hint{display:block;font-size:11px;color:var(--text3);font-family:var(--ui);font-weight:400;letter-spacing:0;text-transform:none;margin-top:2px;line-height:1.5}
 
 .dstory-router-actions{
   display:flex;align-items:center;gap:8px;

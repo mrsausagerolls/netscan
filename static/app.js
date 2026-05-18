@@ -875,10 +875,28 @@ function paintSettings() {
   const voiceEl = $("#setting-voice");
   const newEl   = $("#setting-shortcut-new");
   const altEl   = $("#setting-shortcut-alert");
+  const kaEl    = $("#setting-keep-alive");
   if (voiceEl && document.activeElement !== voiceEl) voiceEl.checked = !!s.voice_enabled;
   if (newEl   && document.activeElement !== newEl)   newEl.value     = s.shortcut_on_new_device || "";
   if (altEl   && document.activeElement !== altEl)   altEl.value     = s.shortcut_on_alert || "";
+  if (kaEl    && document.activeElement !== kaEl)    kaEl.checked    = !!s.keep_alive;
 }
+
+$("#keep-alive-save")?.addEventListener("click", async () => {
+  const status = $("#keep-alive-status");
+  status.textContent = "Applying…";
+  const r = await fetch("/api/settings/save", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({ keep_alive: $("#setting-keep-alive").checked ? "1" : "0" }),
+  }).then(r => r.json());
+  if (r.ok) {
+    status.textContent = "Applied ✓";
+  } else {
+    status.textContent = `✗ ${r.error || "failed"}`;
+  }
+  setTimeout(() => { status.textContent = ""; }, 3000);
+  refresh();
+});
 $("#settings-save")?.addEventListener("click", async () => {
   const status = $("#settings-status");
   status.textContent = "Saving…";
