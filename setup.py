@@ -9,9 +9,11 @@ OPTIONS = {
     "plist": {
         "CFBundleName":                "NetScan",
         "CFBundleDisplayName":         "NetScan",
-        "CFBundleIdentifier":          "com.netscan.wifiscanner",
+        "CFBundleIdentifier":          "co.ingloriouslabs.netscan",
         "CFBundleVersion":             __version__,
         "CFBundleShortVersionString":  __version__,
+        "CFBundleGetInfoString":       f"NetScan {__version__} — Made by Inglorious Labs",
+        "NSHumanReadableCopyright":    "© 2026 Inglorious Labs",
         "LSUIElement":                 True,   # Hide from Dock
         "NSLocationWhenInUseUsageDescription":
             "NetScan reads the WiFi SSID to display your current network name.",
