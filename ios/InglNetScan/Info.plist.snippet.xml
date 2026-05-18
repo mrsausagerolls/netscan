@@ -1,0 +1,8 @@
+<!-- Merge these keys into your Info.plist (right-click → Open As → Source Code in Xcode). iOS 14+ requires explicit user consent for local-network access; without these keys Bonjour discovery returns nothing and there's no error message. -->
+<key>NSLocalNetworkUsageDescription</key>
+<string>Inglorious Network Scanner discovers your home INS instance over the local WiFi to show your network's status on this phone. No data leaves your network.</string>
+
+<key>NSBonjourServices</key>
+<array>
+    <string>_ins._tcp</string>
+</array>

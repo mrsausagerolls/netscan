@@ -47,42 +47,54 @@ The principles INS optimizes for, in order:
 - **Notification burst-coalescing** (5 new joins → 1 banner).
 - **Pushover** + **ntfy** webhook dispatchers alongside Discord/Slack.
 
-## Next — v2.2 (not started)
+## Shipped — v2.2 / v2.3 / v2.4
 
-- **Signed + notarized .app + DMG.** The single biggest trust win. Once we
-  have an Apple Developer ID, the curl-installer becomes optional rather
-  than the recommended path. Also fixes the macOS notification attribution
-  (currently appears as "Script Editor").
+**v2.2** — Router quarantine. `routerctl.py` with Unifi (REST) + OpenWrt
+(SSH `uci macfilter`) backends. Per-device Block button in the story
+drawer. Test-connection workflow before relying on it.
+
+**v2.3** — Passive sniffer. `sniffer.py` (scapy AsyncSniffer) with
+permission gating; per-device bandwidth tracking flushed to SQLite once
+a minute; DNS query logging with mtime-driven threat-intel match
+(`threats.py`). Bandwidth sparkline + DNS lookups in the device story
+drawer. One-time `sudo tools/enable_sniffer.sh` setup creates an
+`access_bpf` group and persists `/dev/bpf*` permissions across boots.
+
+**v2.4** — iOS companion app scaffold in `/ios`. Swift / SwiftUI source
+for a read-only LAN-only viewer that discovers INS via Bonjour and
+renders devices + alerts + health score. **Scaffold-only — not built or
+tested by author; users open in Xcode 15+, follow ios/README.md.** No
+INS-side runtime changes shipped in this version — v2.5 work below is
+what's needed to make the scaffold actually connect.
+
+## Next — v2.5 (not started)
+
+- **LAN-bind dashboard option** — current INS binds `127.0.0.1` only by
+  design. Add an opt-in setting that binds the LAN interface so the iOS
+  scaffold (and Mac browsers on other devices) can reach it. Must require
+  an auth token, not just origin checks — the same-origin guard is
+  pointless once we're listening on a non-loopback interface.
+- **Bonjour service publish** — register `_ins._tcp` on the WiFi adapter
+  so the iOS app can discover the Mac without a manual IP. Tiny change
+  using `pyobjc-framework-Foundation`'s NSNetService, or `zeroconf` pkg.
+- **Signed + notarized .app + DMG.** The single biggest trust win — fixes
+  the macOS notification attribution (currently "Script Editor") and lets
+  the curl-installer become optional.
 - **Homebrew cask** — `brew install --cask inglorious-network-scanner`.
-- **Router-API block / quarantine** — when the user clicks "Block" on a
-  device, INS calls the router's API to kick it off the WiFi. Per-vendor
-  modules; first targets:
-  - **Unifi (UDM-Pro / Dream Machine / Cloud Key)** via the official REST
-    API. Needs admin creds in Settings; tested with a real device before
-    shipping.
-  - **OpenWrt** via SSH + `uci set wireless.@wifi-iface[0].macfilter='deny'`.
-  - **Eero** via the unofficial Cognito-auth API (carries breakage risk).
-- **Schedule profiles** — "Out of town" auto-alerts on any new device; "Kids'
-  bedtime" silences non-critical alerts for a window. Cron-style scheduler
-  + scoped rule activation.
-- **Per-network memory** — when you move between home / office / café, INS
-  keeps device lists separated per SSID rather than mixing them.
+- **Eero router-block** via Cognito-auth API. Brittle (Amazon rotates
+  challenge formats); deferred until v2.5 has integration tests against
+  a recorded Cognito flow.
+- **Schedule profiles** — "Out of town" auto-alerts on any new device;
+  "Kids' bedtime" silences non-critical alerts for a window.
+- **Per-network memory** — when you move between home / office / café,
+  INS keeps device lists separated per SSID rather than mixing them.
 
 ## Exploration — v3.0
 
-- **Bandwidth + connection map per device** via passive pcap on the WiFi
-  interface. Needs root (current launchd registration runs as the user),
-  pulls per-device byte counts + remote IPs over rolling windows, surfaces
-  "your smart TV phones home to Korea" insights. Significant scanner thread
-  rework.
-- **DNS query logging + threat-intel correlation.** Opt-in; needs root pcap
-  or a local resolver shim. Vastly more powerful than the v2.0 local-list
-  match because we'd see *every* lookup, not just ones that happen to be on
-  a known-bad domain. Privacy-sensitive — has to be opt-in and locally-only.
-- **iOS companion app (LAN-only).** Native Swift app that discovers the
-  local INS via Bonjour and surfaces alerts + triage on your phone. No
-  cloud round-trip. Realistic scope: a few weekends of native iOS work
-  plus Apple Developer + App Store submission.
+- **Connection map per device** — extend the v2.3 sniffer to also record
+  remote IPs (not just bandwidth totals) and surface "your smart TV
+  phones home to Korea" insights with country/ASN annotation via a local
+  GeoIP DB.
 - **Local-LLM "Name this device"** — feed vendor + ports + fingerprint to
   a small local model (Ollama if installed) and propose a friendly name.
   Strictly on-device.
@@ -91,6 +103,9 @@ The principles INS optimizes for, in order:
 - **Linux port** — factor a headless engine + dashboard out of the macOS
   menubar wrapper so INS can run as a systemd service.
 - **Home Assistant MQTT publisher** for prosumer integration.
+- **Native iOS app, fully maintained** — promote the v2.4 scaffold into a
+  first-class build with App Store distribution. Needs an Apple Developer
+  account and ongoing iOS-side maintenance.
 
 ## Architectural debt
 
