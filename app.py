@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""WiFi Scanner — macOS menubar app."""
+"""Inglorious Network Scanner — macOS menubar app."""
 
 import os
 import re
@@ -11,11 +11,19 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import rumps
+import classify
 import dashboard
+import detect
+import events
+import health
+import igd
+import notify
+import security
+import webhooks
 from scanner import do_scan, enrich, scan_ports, probe_device, best_fingerprint, get_wifi_info
 from store import DeviceStore
 from updater import check_for_update
-from version import GITHUB_REPO, __version__
+from version import GITHUB_REPO, __app_name__, __version__
 from wol import wake
 
 POLL_INTERVAL    = 5
@@ -23,6 +31,15 @@ AUTO_RESCAN      = 5
 ICON             = "📡"
 DASH_PORT        = 8765
 UPDATE_INTERVAL  = 6 * 60 * 60  # check GitHub Releases every 6 h
+WAN_REFRESH_INTERVAL = 30 * 60  # re-walk router IGD mappings every 30 min
+
+# Subscribe alert notifications + webhooks at import time so they fire for
+# any alert raised during a scan, no matter which thread raises it.
+def _on_alert_raised(payload: dict):
+    notify.notify_alert(payload)
+    webhooks.dispatch(store, payload)
+
+events.subscribe(events.ALERT_RAISED, _on_alert_raised)
 
 IS_FROZEN = getattr(sys, "frozen", False)
 PROJ_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -58,7 +75,7 @@ def _location_authorized() -> bool:
         return False
 
 def _request_location_permission():
-    """Call requestWhenInUseAuthorization so NetScan appears in System Settings → Location Services."""
+    """Call requestWhenInUseAuthorization so INS appears in System Settings → Location Services."""
     global _loc_mgr
     try:
         from CoreLocation import CLLocationManager, kCLAuthorizationStatusNotDetermined
@@ -91,7 +108,7 @@ def _copy(text: str):
     subprocess.run(["pbcopy"], input=text.encode(), check=True)
 
 
-class WiFiScannerApp(rumps.App):
+class InsApp(rumps.App):
     def __init__(self):
         super().__init__(ICON, quit_button=None)
 
@@ -114,7 +131,11 @@ class WiFiScannerApp(rumps.App):
             f"Open Dashboard  ↗  localhost:{DASH_PORT}",
             callback=self._open_dashboard,
         )
-        self._rescan   = rumps.MenuItem("Rescan Now", callback=self._on_rescan)
+        self._rescan    = rumps.MenuItem("Rescan Now", callback=self._on_rescan)
+        self._alerts_item = rumps.MenuItem(
+            "🚨  Open Security Alerts",
+            callback=self._open_alerts,
+        )
         self._loc_item = rumps.MenuItem(
             "⚠️  Allow Location Access for SSID →",
             callback=self._open_location_settings,
@@ -123,7 +144,7 @@ class WiFiScannerApp(rumps.App):
             f"⬆️  Update available", callback=self._on_update_clicked,
         )
         self._quit = rumps.MenuItem(
-            f"Quit  ·  v{__version__}", callback=rumps.quit_application,
+            f"Quit  ·  {__app_name__} v{__version__}", callback=rumps.quit_application,
         )
 
         self._build_menu()
@@ -141,6 +162,7 @@ class WiFiScannerApp(rumps.App):
         _request_location_permission()
         threading.Thread(target=self._monitor_loop, daemon=True).start()
         threading.Thread(target=self._update_loop, daemon=True).start()
+        threading.Thread(target=self._wan_refresh_loop, daemon=True).start()
         self._trigger_scan()
 
     # ── Menu helpers ─────────────────────────────────────────────────────────
@@ -149,7 +171,11 @@ class WiFiScannerApp(rumps.App):
         items = []
         if self._update_info:
             items += [self._update_item, None]
-        items += [self._status, self._scan_time, None, self._dash_item, None, self._rescan]
+        items += [
+            self._status, self._scan_time, None,
+            self._alerts_item, self._dash_item, None,
+            self._rescan,
+        ]
         self._loc_item_added = not _location_authorized()
         if self._loc_item_added:
             items += [None, self._loc_item]
@@ -179,28 +205,59 @@ class WiFiScannerApp(rumps.App):
         for d in sorted(devices, key=lambda x: tuple(int(p) for p in x["ip"].split("."))):
             rec = seen.get(d["mac"], {})
             fp_hints = rec.get("fingerprint", {})
+            dtype = rec.get("device_type", "unknown")
             enriched.append({
-                "ip":          d["ip"],
-                "mac":         d["mac"],
-                "hostname":    d.get("hostname", "—"),
-                "vendor":      d.get("vendor", "—"),
-                "fingerprint": best_fingerprint(fp_hints),
-                "latency":     d.get("latency"),
-                "ports":       rec.get("ports", []),
-                "first_seen":  rec.get("first_seen"),
-                "is_known":    store.is_known(d["mac"]),
-                "known_name":  store.known_name(d["mac"]),
-                "me":          d.get("me", False),
+                "ip":              d["ip"],
+                "mac":             d["mac"],
+                "hostname":        d.get("hostname", "—"),
+                "vendor":          d.get("vendor", "—"),
+                "fingerprint":     best_fingerprint(fp_hints),
+                "latency":         d.get("latency"),
+                "ports":           rec.get("ports", []),
+                "first_seen":      rec.get("first_seen"),
+                "is_known":        store.is_known(d["mac"]),
+                "known_name":      store.known_name(d["mac"]),
+                "me":              d.get("me", False),
+                "device_type":     dtype,
+                "type_label":      classify.label(dtype),
+                "type_icon":       classify.icon(dtype),
+                "type_confidence": rec.get("type_confidence", 0.0),
+                "no_probe":        rec.get("no_probe", False),
+                "wan_exposed":     store.wan_mappings_for(d.get("ip", "")),
             })
+        # Triage queue = unknown, non-self devices, ordered newest first.
+        triage = sorted(
+            [d for d in enriched if not d["is_known"] and not d["me"]],
+            key=lambda d: -(d.get("first_seen") or 0),
+        )
         return {
-            "ssid":      ssid or "",
-            "network":   self._net or "",
-            "count":     len(devices),
-            "last_scan": time.strftime("%H:%M:%S", time.localtime(last)) if last else "—",
-            "devices":   enriched,
-            "known":     store.known,
-            "hook":      store.hook_script,
+            "ssid":       ssid or "",
+            "network":    self._net or "",
+            "count":      len(devices),
+            "last_scan":  time.strftime("%H:%M:%S", time.localtime(last)) if last else "—",
+            "devices":    enriched,
+            "triage":     triage,
+            "known":      store.known,
+            "hook":       store.hook_script,
+            "alerts":     store.alerts(limit=50),
+            "unack_count": store.unack_alert_count(),
+            "webhooks":   store.webhooks(),
+            "health":     store.latest_health() or self._compute_and_store_health(enriched),
+            "wan_mappings": store.wan_mappings(),
+            "app_name":   __app_name__,
+            "version":    __version__,
         }
+
+    def _compute_and_store_health(self, enriched_devices: list[dict]) -> dict:
+        result = health.compute(
+            devices       = enriched_devices,
+            unack_alerts  = store.alerts(unacknowledged_only=True, limit=200),
+            wan_mappings  = store.wan_mappings(),
+            dhcp_servers  = detect.rogue_dhcp_servers(store),
+        )
+        store.record_health(result["score"], result["reasons"])
+        result["ts"] = time.time()
+        return result
 
     # ── Main-thread timer ─────────────────────────────────────────────────────
 
@@ -256,12 +313,25 @@ class WiFiScannerApp(rumps.App):
             )
             devices = enrich(devices, local_ip, skip_vendor=False)
 
-            # Persist to store, detect new arrivals
+            # Persist to store; this also stamps _is_new / _vendor_changed.
             for d in devices:
                 store.touch(d)
+                # Classify on every scan — cheap, and lets the type refine
+                # as ports/fingerprints come in over subsequent rescans.
+                fp_str = best_fingerprint(store.get_device(d["mac"]).get("fingerprint", {})
+                                          if store.get_device(d["mac"]) else {})
+                dtype, conf = classify.classify(
+                    vendor=d.get("vendor", ""),
+                    fingerprint=fp_str,
+                    ports=store.get_device(d["mac"]).get("ports", []) if store.get_device(d["mac"]) else [],
+                    hostname=d.get("hostname", ""),
+                )
+                store.update_device_type(d["mac"], dtype, conf)
+                d["device_type"]     = dtype
+                d["type_confidence"] = conf
 
             with self._lock:
-                prev_ips         = {d["ip"] for d in self._devices}
+                prev_ips         = {x["ip"] for x in self._devices}
                 self._devices    = devices
                 self._last_scan  = time.time()
                 self._use_fallback = use_fallback
@@ -269,11 +339,18 @@ class WiFiScannerApp(rumps.App):
 
             store.record_scan(len(devices), ssid or "")
 
+            # Run security rules now — port-change rules will rerun in _bg_port_scan.
+            self._evaluate_and_dispatch_alerts(devices, new_ports_by_mac={})
+
             joined = {d["ip"] for d in devices} - prev_ips
             if joined and prev_ips:
                 for ip in sorted(joined):
                     d = next((x for x in devices if x["ip"] == ip), {})
                     store.run_hook(d, ssid or "")
+                    events.publish(events.DEVICE_JOINED, {"device": d, "ssid": ssid})
+
+            events.publish(events.SCAN_COMPLETED,
+                           {"count": len(devices), "ssid": ssid or ""})
 
             self.title = f"{ICON} {len(devices)}"
 
@@ -292,10 +369,17 @@ class WiFiScannerApp(rumps.App):
 
     def _bg_port_scan(self, devices: list[dict]):
         seen = store.all_seen
+        new_ports_by_mac: dict[str, list[int]] = {}
         for d in devices:
+            # Respect the user's "don't probe this device" flag — for fragile
+            # IoT/printers we've previously crashed by port-scanning.
+            if seen.get(d["mac"], {}).get("no_probe"):
+                continue
             try:
                 ports = scan_ports(d["ip"])
-                store.update_ports(d["mac"], ports)
+                newly_opened = store.update_ports(d["mac"], ports)
+                if newly_opened:
+                    new_ports_by_mac[d["mac"]] = newly_opened
                 # Skip identification probes if we already have a fingerprint —
                 # avoids mDNS/SSDP/SMB chatter on every 5 s rescan.
                 if seen.get(d["mac"], {}).get("fingerprint"):
@@ -303,8 +387,80 @@ class WiFiScannerApp(rumps.App):
                 hints = probe_device(d["ip"], d["mac"], ports)
                 if hints:
                     store.update_fingerprint(d["mac"], hints)
+                    # Re-classify with the fresh fingerprint.
+                    dtype, conf = classify.classify(
+                        vendor=d.get("vendor", ""),
+                        fingerprint=best_fingerprint(hints),
+                        ports=ports,
+                        hostname=d.get("hostname", ""),
+                    )
+                    store.update_device_type(d["mac"], dtype, conf)
+                    d["device_type"]     = dtype
+                    d["type_confidence"] = conf
             except Exception:
                 pass
+
+        if new_ports_by_mac:
+            # Re-run security rules for devices with newly-opened ports.
+            updated = []
+            for d in devices:
+                if d["mac"] in new_ports_by_mac:
+                    fresh = store.get_device(d["mac"]) or {}
+                    fresh.update({k: d.get(k) for k in ("ip", "hostname", "vendor")})
+                    fresh["is_known"]   = store.is_known(d["mac"])
+                    fresh["known_name"] = store.known_name(d["mac"])
+                    fresh["mac"]        = d["mac"]
+                    fresh["me"]         = d.get("me", False)
+                    updated.append(fresh)
+            self._evaluate_and_dispatch_alerts(updated, new_ports_by_mac)
+
+    def _evaluate_and_dispatch_alerts(
+        self, devices: list[dict], new_ports_by_mac: dict[str, list[int]]
+    ):
+        """Run per-device + network-wide security rules; persist + dispatch each Alert."""
+        for d in devices:
+            mac = d.get("mac")
+            new_ports = new_ports_by_mac.get(mac, [])
+            wan_for_d = store.wan_mappings_for(d.get("ip", ""))
+            for alert in security.evaluate(
+                d, new_ports=new_ports, wan_mappings=wan_for_d
+            ):
+                if self._alert_already_today(alert):
+                    continue
+                alert_id = store.add_alert(
+                    kind=alert.kind, severity=alert.severity,
+                    title=alert.title, message=alert.message, mac=alert.mac,
+                )
+                payload = alert.as_dict() | {"id": alert_id, "ts": time.time()}
+                events.publish(events.ALERT_RAISED, payload)
+
+        # Network-scope rules (no per-device argument).
+        try:
+            net_alerts = security.evaluate_network(
+                dhcp_servers       = detect.rogue_dhcp_servers(store),
+                arp_anomalies      = detect.arp_anomalies(store),
+                fingerprint_groups = detect.fingerprint_groups(store),
+            )
+        except Exception:
+            net_alerts = []
+        for alert in net_alerts:
+            if self._alert_already_today(alert):
+                continue
+            alert_id = store.add_alert(
+                kind=alert.kind, severity=alert.severity,
+                title=alert.title, message=alert.message, mac=alert.mac,
+            )
+            payload = alert.as_dict() | {"id": alert_id, "ts": time.time()}
+            events.publish(events.ALERT_RAISED, payload)
+
+    def _alert_already_today(self, alert) -> bool:
+        """Cheap same-day dedup: query alerts table for matching (mac,kind) since midnight."""
+        today_start = time.mktime(time.strptime(time.strftime("%Y-%m-%d"), "%Y-%m-%d"))
+        rows = store._q(
+            "SELECT 1 FROM alerts WHERE mac IS ? AND kind=? AND ts>=? LIMIT 1",
+            (alert.mac, alert.kind, today_start),
+        )
+        return bool(rows)
 
     # ── Menu rebuild (main thread only) ──────────────────────────────────────
 
@@ -312,6 +468,11 @@ class WiFiScannerApp(rumps.App):
         count = len(devices)
         self._status.title    = f"🌐  {ssid}  —  {network}"
         self._scan_time.title = f"Last scan: {time.strftime('%H:%M:%S')}  ·  {count} device(s)"
+        unack = store.unack_alert_count()
+        self._alerts_item.title = (
+            f"🚨  Security Alerts  ·  {unack} unread" if unack
+            else "🛡  Security Alerts  ·  all clear"
+        )
 
         sorted_devs = sorted(
             devices, key=lambda d: tuple(int(x) for x in d["ip"].split("."))
@@ -371,7 +532,8 @@ class WiFiScannerApp(rumps.App):
             head
             + [self._status, self._scan_time, None]
             + device_items
-            + [None, self._dash_item, None, self._rescan, None, self._quit]
+            + [None, self._alerts_item, self._dash_item,
+               None, self._rescan, None, self._quit]
         )
 
     # ── Known-device helpers (update store + immediately redraw menu) ─────────
@@ -408,8 +570,29 @@ class WiFiScannerApp(rumps.App):
     def _open_dashboard(self, _):
         subprocess.run(["open", f"http://localhost:{DASH_PORT}"], check=False)
 
+    def _open_alerts(self, _):
+        subprocess.run(["open", f"http://localhost:{DASH_PORT}/#alerts"], check=False)
+
     def _on_rescan(self, _):
         self._trigger_scan()
+
+    # ── WAN port-mapping refresh ─────────────────────────────────────────────
+
+    def _wan_refresh_loop(self):
+        """Periodically ask the router (via UPnP IGD) which LAN devices are
+        exposed to the WAN side, and persist the snapshot so health/security
+        rules can react. Best-effort: most routers either don't speak IGD or
+        have it disabled (which is the safer state)."""
+        time.sleep(20)  # let the first scan settle before bothering the router
+        while True:
+            try:
+                igd_meta = igd.discover_igd(timeout=2.0)
+                if igd_meta:
+                    mappings = igd.list_port_mappings(igd_meta)
+                    store.record_wan_mappings(mappings)
+            except Exception:
+                pass
+            time.sleep(WAN_REFRESH_INTERVAL)
 
     # ── Update check ──────────────────────────────────────────────────────────
 
@@ -454,10 +637,10 @@ class WiFiScannerApp(rumps.App):
             return
 
         ok = rumps.alert(
-            title="Update NetScan",
+            title=f"Update {__app_name__}",
             message=f"Pull v{info['tag']} from GitHub and restart?\n\n"
                     f"Runs: git pull --ff-only + launchctl restart.\n"
-                    f"Log: /tmp/netscan-update.log",
+                    f"Log: /tmp/ins-update.log",
             ok="Update", cancel="Cancel",
         )
         if ok != 1:
@@ -480,4 +663,4 @@ class WiFiScannerApp(rumps.App):
 
 
 if __name__ == "__main__":
-    WiFiScannerApp().run()
+    InsApp().run()

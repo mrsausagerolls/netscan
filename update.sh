@@ -4,8 +4,8 @@
 set -euo pipefail
 
 PROJ="$(cd "$(dirname "$0")" && pwd)"
-LOG="/tmp/netscan-update.log"
-LABEL="com.wifiscanner"
+LOG="/tmp/ins-update.log"
+LABEL="co.ingloriouslabs.netscan"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 
 cd "$PROJ"
@@ -36,6 +36,6 @@ cd "$PROJ"
       || { launchctl unload "$PLIST" 2>/dev/null || true; launchctl load "$PLIST"; }
     echo "restarted via launchd"
   else
-    echo "no LaunchAgent installed at $PLIST — start NetScan manually"
+    echo "no LaunchAgent installed at $PLIST — start manually"
   fi
 } >> "$LOG" 2>&1

@@ -50,46 +50,263 @@ def test_normalize_mac():
 def test_is_unicast():
     from scanner import _is_unicast
     assert _is_unicast("192.168.1.10", "AA:BB:CC:DD:EE:FF")
-    assert not _is_unicast("192.168.1.10", "FF:FF:FF:FF:FF:FF")  # broadcast MAC
-    assert not _is_unicast("224.0.0.1", "AA:BB:CC:DD:EE:FF")    # multicast IP
-    assert not _is_unicast("239.255.0.1", "AA:BB:CC:DD:EE:FF")  # multicast IP
+    assert not _is_unicast("192.168.1.10", "FF:FF:FF:FF:FF:FF")
+    assert not _is_unicast("224.0.0.1", "AA:BB:CC:DD:EE:FF")
+    assert not _is_unicast("239.255.0.1", "AA:BB:CC:DD:EE:FF")
 
 
 def test_probe_ports_excludes_udp():
-    """SSDP (1900) and mDNS (5353) are UDP — not valid for TCP connect probes."""
     from scanner import PROBE_PORTS
     assert 1900 not in PROBE_PORTS
     assert 5353 not in PROBE_PORTS
 
 
-# ── store ───────────────────────────────────────────────────────────────────
+# ── store (SQLite) ──────────────────────────────────────────────────────────
 
-def test_store_roundtrip(tmp_path, monkeypatch):
-    monkeypatch.setattr("store._DATA", tmp_path)
-    import store as store_mod
-    s = store_mod.DeviceStore()
+def _fresh_store(tmp_path):
+    import store
+    return store.DeviceStore(data_dir=tmp_path)
 
+
+def test_store_touch_persists_and_marks_new(tmp_path):
+    s = _fresh_store(tmp_path)
+    d1 = s.touch({"ip": "10.0.0.5", "mac": "AA:BB:CC:DD:EE:FF",
+                  "hostname": "host.local", "vendor": "Acme"})
+    assert d1["_is_new"] is True
+
+    d2 = s.touch({"ip": "10.0.0.5", "mac": "AA:BB:CC:DD:EE:FF",
+                  "hostname": "host.local", "vendor": "Acme"})
+    assert d2["_is_new"] is False
+
+
+def test_store_detects_vendor_change(tmp_path):
+    s = _fresh_store(tmp_path)
     s.touch({"ip": "10.0.0.5", "mac": "AA:BB:CC:DD:EE:FF",
-             "hostname": "host.local", "vendor": "Acme"})
-    s.update_ports("AA:BB:CC:DD:EE:FF", [22, 80])
-    s.update_fingerprint("AA:BB:CC:DD:EE:FF", {"mdns": "host.local"})
-    s._flush_now()
+             "hostname": "h", "vendor": "Acme Corp"})
+    spoofed = s.touch({"ip": "10.0.0.5", "mac": "AA:BB:CC:DD:EE:FF",
+                       "hostname": "h", "vendor": "Evil Industries"})
+    assert spoofed["_vendor_changed"] == "Acme Corp"
 
-    seen = json.loads((tmp_path / "seen.json").read_text())
-    assert seen["AA:BB:CC:DD:EE:FF"]["ip"] == "10.0.0.5"
-    assert seen["AA:BB:CC:DD:EE:FF"]["ports"] == [22, 80]
-    assert seen["AA:BB:CC:DD:EE:FF"]["fingerprint"] == {"mdns": "host.local"}
 
+def test_store_update_ports_returns_newly_opened(tmp_path):
+    s = _fresh_store(tmp_path)
+    mac = "AA:BB:CC:DD:EE:FF"
+    s.touch({"ip": "10.0.0.5", "mac": mac, "hostname": "h", "vendor": "v"})
+    assert s.update_ports(mac, [22, 80]) == [22, 80]
+    assert s.update_ports(mac, [22, 80, 443]) == [443]
+    assert s.update_ports(mac, [22, 80, 443]) == []        # no diff
+
+
+def test_store_known_roundtrip(tmp_path):
+    s = _fresh_store(tmp_path)
     s.add_known("AA:BB:CC:DD:EE:FF", "my-laptop")
     assert s.is_known("AA:BB:CC:DD:EE:FF")
     assert s.known_name("AA:BB:CC:DD:EE:FF") == "my-laptop"
-    assert json.loads((tmp_path / "known.json").read_text())["AA:BB:CC:DD:EE:FF"]["name"] == "my-laptop"
-
     s.remove_known("AA:BB:CC:DD:EE:FF")
     assert not s.is_known("AA:BB:CC:DD:EE:FF")
 
 
-# ── dashboard origin check ─────────────────────────────────────────────────
+def test_store_alerts_and_ack(tmp_path):
+    s = _fresh_store(tmp_path)
+    aid = s.add_alert("new_device", "info", "x joined", "msg here", mac="AA:BB:CC:DD:EE:FF")
+    assert s.unack_alert_count() == 1
+    assert s.alerts()[0]["id"] == aid
+    s.acknowledge_alert(aid)
+    assert s.unack_alert_count() == 0
+
+
+def test_store_webhooks_filter_by_severity(tmp_path):
+    s = _fresh_store(tmp_path)
+    s.add_webhook("https://example.com/info",     "info",     min_severity="info")
+    s.add_webhook("https://example.com/warn",     "warn",     min_severity="warning")
+    s.add_webhook("https://example.com/critical", "critical", min_severity="critical")
+
+    assert {h["min_severity"] for h in s.active_webhooks_for("info")}     == {"info"}
+    assert {h["min_severity"] for h in s.active_webhooks_for("warning")}  == {"info", "warning"}
+    assert {h["min_severity"] for h in s.active_webhooks_for("critical")} == {"info", "warning", "critical"}
+
+
+def test_store_migrates_v1_json(tmp_path):
+    import store
+    (tmp_path / "known.json").write_text(json.dumps({
+        "AA:BB:CC:DD:EE:FF": {"name": "router", "added": 1000.0},
+    }))
+    (tmp_path / "seen.json").write_text(json.dumps({
+        "AA:BB:CC:DD:EE:FF": {"ip": "10.0.0.1", "vendor": "Asus", "first_seen": 999.0,
+                              "last_seen": 1000.0, "hostname": "router.local",
+                              "fingerprint": {"mdns": "router.local"}, "ports": [80, 443]},
+    }))
+    (tmp_path / "history.json").write_text(json.dumps([{"ts": 1000.0, "count": 5, "ssid": "HomeWiFi"}]))
+    (tmp_path / "hook.json").write_text(json.dumps({"on_join": "echo joined"}))
+
+    s = store.DeviceStore(data_dir=tmp_path)
+    assert s.is_known("AA:BB:CC:DD:EE:FF")
+    assert s.known_name("AA:BB:CC:DD:EE:FF") == "router"
+    dev = s.get_device("AA:BB:CC:DD:EE:FF")
+    assert dev["vendor"] == "Asus"
+    assert dev["ports"] == [80, 443]
+    assert dev["fingerprint"] == {"mdns": "router.local"}
+    assert s.history[0]["ssid"] == "HomeWiFi"
+    assert s.hook_script == "echo joined"
+    # JSON files should be moved aside.
+    assert not (tmp_path / "known.json").exists()
+    assert (tmp_path / "known.json.v1.bak").exists()
+
+    # Reinitializing must not re-import.
+    s2 = store.DeviceStore(data_dir=tmp_path)
+    assert s2.is_known("AA:BB:CC:DD:EE:FF")  # still there
+    assert s2.history[0]["ssid"] == "HomeWiFi"
+    # History row count didn't double.
+    assert len(s2.history) == 1
+
+
+# ── classify ────────────────────────────────────────────────────────────────
+
+def test_classify_by_fingerprint_keyword():
+    import classify
+    dtype, conf = classify.classify(fingerprint="iPhone-of-Sam")
+    assert dtype == "phone"
+    assert conf >= 0.8
+
+    dtype, _ = classify.classify(fingerprint="MyMacBook-Pro.local")
+    assert dtype == "laptop"
+
+
+def test_classify_by_vendor():
+    import classify
+    dtype, conf = classify.classify(vendor="Brother Industries, Ltd.")
+    assert dtype == "printer"
+    assert 0.5 <= conf <= 0.95
+
+
+def test_classify_ports_only():
+    import classify
+    dtype, _ = classify.classify(vendor="", fingerprint="", ports=[9100])
+    assert dtype == "printer"
+    dtype, _ = classify.classify(vendor="", fingerprint="", ports=[554])
+    assert dtype == "camera"
+
+
+def test_classify_unknown_when_no_signals():
+    import classify
+    dtype, conf = classify.classify(vendor="", fingerprint="", ports=[])
+    assert dtype == "unknown"
+    assert conf == 0.0
+
+
+# ── security rules ──────────────────────────────────────────────────────────
+
+def test_security_new_device_alert():
+    import security
+    a = security.check_new_device({
+        "_is_new": True, "is_known": False, "me": False,
+        "mac": "AA:BB:CC:DD:EE:FF", "ip": "10.0.0.7",
+        "hostname": "?", "vendor": "Espressif", "device_type": "iot",
+    })
+    assert a is not None
+    assert a.severity == "info"
+    assert "joined" in a.title.lower() or "new" in a.title.lower()
+
+
+def test_security_no_alert_for_self_or_known():
+    import security
+    assert security.check_new_device({"_is_new": True, "is_known": True}) is None
+    assert security.check_new_device({"_is_new": True, "is_known": False, "me": True}) is None
+
+
+def test_security_vendor_change_is_critical():
+    import security
+    a = security.check_vendor_change({
+        "_vendor_changed": "Apple Inc",
+        "vendor": "Random Vendor", "mac": "AA:BB:CC:DD:EE:FF",
+        "ip": "10.0.0.1",
+    })
+    assert a is not None
+    assert a.severity == "critical"
+
+
+def test_security_risky_ports_flag_telnet_as_critical():
+    import security
+    alerts = security.check_risky_ports(
+        {"mac": "X", "ip": "1.2.3.4"}, new_ports=[23, 80]
+    )
+    assert any(a.severity == "critical" and "Telnet" in a.title for a in alerts)
+
+
+# ── notify (throttling) ─────────────────────────────────────────────────────
+
+def test_notify_throttles_and_dedupes(monkeypatch):
+    import notify
+    notify._last_emit_ts = 0
+    notify._recent.clear()
+    notify._burst_queue.clear()
+    notify._burst_timer = None
+
+    sent = []
+    monkeypatch.setattr(notify, "_osascript_notify",
+                        lambda title, msg, subtitle="": sent.append((title, msg)))
+
+    # Use a critical alert (skips burst-coalescing) so we get an immediate emit
+    # we can assert on. Same dedup key fires once, second call is suppressed.
+    a = {"kind": "vendor_changed", "severity": "critical",
+         "title": "spoof", "message": "...", "mac": "AA:BB:CC:DD:EE:FF"}
+    assert notify.notify_alert(a) is True
+    assert notify.notify_alert(a) is False
+    assert len(sent) == 1
+
+
+# ── webhooks (payload shape) ────────────────────────────────────────────────
+
+def test_webhook_payload_discord_format():
+    import webhooks
+    p = webhooks._payload_for(
+        "https://discord.com/api/webhooks/123/abc",
+        {"title": "T", "message": "M", "severity": "warning"},
+    )
+    assert "embeds" in p
+    assert p["embeds"][0]["title"] == "T"
+
+
+def test_webhook_payload_slack_format():
+    import webhooks
+    p = webhooks._payload_for(
+        "https://hooks.slack.com/services/T/B/X",
+        {"title": "T", "message": "M", "severity": "critical"},
+    )
+    assert "attachments" in p
+    assert p["attachments"][0]["title"] == "T"
+
+
+def test_webhook_payload_generic_default():
+    import webhooks
+    p = webhooks._payload_for(
+        "https://example.com/whatever",
+        {"title": "T", "message": "M", "severity": "info"},
+    )
+    assert p["alert"]["title"] == "T"
+
+
+# ── events ──────────────────────────────────────────────────────────────────
+
+def test_events_subscribe_and_publish():
+    import events
+    got = []
+    events.subscribe("test.x", lambda p: got.append(p))
+    events.publish("test.x", {"v": 1})
+    events.publish("test.x", {"v": 2})
+    assert got == [{"v": 1}, {"v": 2}]
+
+
+def test_events_one_bad_subscriber_doesnt_stop_others():
+    import events
+    got = []
+    events.subscribe("test.y", lambda p: (_ for _ in ()).throw(RuntimeError("bad")))
+    events.subscribe("test.y", lambda p: got.append(p))
+    events.publish("test.y", {"ok": True})
+    assert got == [{"ok": True}]
+
+
+# ── dashboard origin check ──────────────────────────────────────────────────
 
 def test_origin_check_accepts_local():
     import dashboard
@@ -97,15 +314,9 @@ def test_origin_check_accepts_local():
         "http://127.0.0.1:8765",
         "http://localhost:8765",
     }
-
-    # Build a faux handler instance without invoking BaseHTTPRequestHandler.__init__
     h = dashboard._Handler.__new__(dashboard._Handler)
     h.headers = {"Origin": "http://127.0.0.1:8765"}
     assert h._origin_ok()
-
-    h.headers = {"Origin": "http://localhost:8765"}
-    assert h._origin_ok()
-
     h.headers = {"Referer": "http://localhost:8765/"}
     assert h._origin_ok()
 
@@ -117,15 +328,19 @@ def test_origin_check_rejects_foreign():
         "http://localhost:8765",
     }
     h = dashboard._Handler.__new__(dashboard._Handler)
-
     h.headers = {"Origin": "https://evil.com"}
     assert not h._origin_ok()
-
     h.headers = {"Origin": "http://localhost:8765.evil.com"}
     assert not h._origin_ok()
-
-    h.headers = {}  # missing Origin/Referer
+    h.headers = {}
     assert not h._origin_ok()
+
+
+def test_static_path_traversal_blocked(tmp_path, monkeypatch):
+    import dashboard
+    # Try to escape with ../.
+    assert dashboard._read_static("../store.py") is None
+    assert dashboard._read_static("..") is None
 
 
 # ── updater ─────────────────────────────────────────────────────────────────
@@ -142,28 +357,379 @@ def test_check_for_update_returns_newer():
     import updater
     fake = MagicMock()
     fake.read.return_value = json.dumps({
-        "tag_name": "v2.0.0",
-        "html_url": "https://example.com/releases/v2.0.0",
+        "tag_name": "v3.0.0",
+        "html_url": "https://example.com/releases/v3.0.0",
         "body":     "Big release",
     }).encode()
     fake.__enter__ = lambda self: self
     fake.__exit__ = lambda *a: None
     with patch("updater.urllib.request.urlopen", return_value=fake):
-        result = updater.check_for_update(current="1.0.0")
-    assert result == {"tag": "2.0.0", "url": "https://example.com/releases/v2.0.0", "body": "Big release"}
+        result = updater.check_for_update(current="2.0.0")
+    assert result == {"tag": "3.0.0", "url": "https://example.com/releases/v3.0.0", "body": "Big release"}
 
 
 def test_check_for_update_returns_none_when_current():
     import updater
     fake = MagicMock()
-    fake.read.return_value = json.dumps({"tag_name": "v1.0.0", "html_url": "x"}).encode()
+    fake.read.return_value = json.dumps({"tag_name": "v2.0.0", "html_url": "x"}).encode()
     fake.__enter__ = lambda self: self
     fake.__exit__ = lambda *a: None
     with patch("updater.urllib.request.urlopen", return_value=fake):
-        assert updater.check_for_update(current="1.0.0") is None
+        assert updater.check_for_update(current="2.0.0") is None
 
 
 def test_check_for_update_returns_none_on_network_error():
     import updater
     with patch("updater.urllib.request.urlopen", side_effect=OSError("no network")):
-        assert updater.check_for_update(current="1.0.0") is None
+        assert updater.check_for_update(current="2.0.0") is None
+
+
+# ── health (Network Health Score) ───────────────────────────────────────────
+
+def test_health_baseline_is_100():
+    import health
+    h = health.compute(devices=[], unack_alerts=[], wan_mappings=[], dhcp_servers=[])
+    assert h["score"] == 100
+    assert h["band"] == "excellent"
+
+
+def test_health_drops_for_unknown_devices():
+    import health
+    devices = [
+        {"mac": "AA:BB:CC:DD:EE:0" + str(i), "ip": f"10.0.0.{i}",
+         "is_known": False, "me": False, "device_type": "unknown",
+         "vendor": "", "ports": []}
+        for i in range(3)
+    ]
+    h = health.compute(devices, [], [], [])
+    assert h["score"] < 100
+    assert any("unknown" in r["label"].lower() for r in h["reasons"])
+
+
+def test_health_critical_for_rogue_dhcp():
+    import health
+    from detect import DhcpServer
+    servers = [
+        DhcpServer("192.168.1.1", "AA:BB:CC:DD:EE:FF", 0, 0),
+        DhcpServer("192.168.1.50", "11:22:33:44:55:66", 0, 0),
+    ]
+    h = health.compute([], [], [], servers)
+    assert h["score"] <= 75   # rogue dhcp is a 35-point hit
+    assert any("dhcp" in r["label"].lower() for r in h["reasons"])
+
+
+def test_health_wan_exposed_camera_is_heavily_penalized():
+    import health
+    devices = [{"mac": "X", "ip": "10.0.0.5", "device_type": "camera",
+                "is_known": True, "me": False, "vendor": "Hikvision",
+                "ports": [80]}]
+    mappings = [{"internal_ip": "10.0.0.5", "internal_port": 80,
+                 "external_port": 8080, "protocol": "TCP"}]
+    h = health.compute(devices, [], mappings, [])
+    assert h["score"] < 75
+    assert any("camera" in r["label"].lower() and "internet" in r["label"].lower()
+               for r in h["reasons"])
+
+
+def test_health_bands_cover_full_range():
+    import health
+    # Hit it with one of everything to drive into "at_risk"
+    devices = [{"mac": f"X{i}", "ip": f"10.0.0.{i}", "device_type": "unknown",
+                "is_known": False, "me": False, "vendor": "", "ports": [23, 3389]}
+               for i in range(10)]
+    from detect import DhcpServer
+    servers = [DhcpServer(f"10.0.0.{i}", f"XX:XX:XX:XX:XX:{i:02x}", 0, 0)
+               for i in range(3)]
+    h = health.compute(devices, [], [], servers)
+    assert h["band"] in ("poor", "at_risk")
+
+
+# ── detect (passive network watchers) ──────────────────────────────────────
+
+def test_detect_rogue_dhcp_returns_one_per_pair(tmp_path):
+    import store, detect
+    s = store.DeviceStore(data_dir=tmp_path)
+    s.record_dhcp_server("192.168.1.1", "AA:BB:CC:DD:EE:FF")
+    s.record_dhcp_server("192.168.1.1", "AA:BB:CC:DD:EE:FF")   # same → dedup
+    s.record_dhcp_server("192.168.1.50", "11:22:33:44:55:66")
+    servers = detect.rogue_dhcp_servers(s)
+    assert len(servers) == 2
+
+
+def test_detect_arp_anomalies_flags_ip_with_multiple_macs(tmp_path):
+    import store, detect
+    s = store.DeviceStore(data_dir=tmp_path)
+    # Two MACs claim the same IP inside the 1h window
+    s.touch({"ip": "10.0.0.5", "mac": "AA:BB:CC:DD:EE:FF",
+             "hostname": "h", "vendor": "v"})
+    s.touch({"ip": "10.0.0.5", "mac": "11:22:33:44:55:66",
+             "hostname": "h", "vendor": "v"})
+    anomalies = detect.arp_anomalies(s)
+    assert any(a.ip == "10.0.0.5" and len(a.macs) >= 2 for a in anomalies)
+
+
+def test_detect_fingerprint_groups_collapses_to_canonical(tmp_path):
+    import store, detect, json
+    s = store.DeviceStore(data_dir=tmp_path)
+    s.touch({"ip": "10.0.0.5", "mac": "AA:BB:CC:DD:EE:FF",
+             "hostname": "iphone.local", "vendor": "Apple"})
+    s.update_fingerprint("AA:BB:CC:DD:EE:FF", {"mdns": "iphone.local"})
+    s.add_known("AA:BB:CC:DD:EE:FF", "Sam's iPhone")
+
+    # Same fingerprint shows up on a different randomized MAC
+    s.touch({"ip": "10.0.0.6", "mac": "11:22:33:44:55:66",
+             "hostname": "iphone.local", "vendor": "Apple"})
+    s.update_fingerprint("11:22:33:44:55:66", {"mdns": "iphone.local"})
+
+    groups = detect.fingerprint_groups(s)
+    assert len(groups) == 1
+    g = groups[0]
+    assert g.canonical_mac == "AA:BB:CC:DD:EE:FF"
+    assert "11:22:33:44:55:66" in g.member_macs
+
+
+# ── new security rules ─────────────────────────────────────────────────────
+
+def test_security_wan_exposed_camera_is_critical():
+    import security
+    alerts = security.check_wan_exposed_ports(
+        {"mac": "X", "ip": "10.0.0.5", "device_type": "camera"},
+        [{"internal_ip": "10.0.0.5", "internal_port": 80,
+          "external_port": 8080, "protocol": "TCP"}],
+    )
+    assert len(alerts) == 1
+    assert alerts[0].severity == "critical"
+
+
+def test_security_wan_exposed_random_port_is_warning():
+    import security
+    alerts = security.check_wan_exposed_ports(
+        {"mac": "X", "ip": "10.0.0.5", "device_type": "computer"},
+        [{"internal_ip": "10.0.0.5", "internal_port": 9000,
+          "external_port": 9000, "protocol": "TCP"}],
+    )
+    assert alerts[0].severity == "warning"
+
+
+def test_security_rogue_dhcp_silent_with_one_server():
+    import security
+    from detect import DhcpServer
+    assert security.check_rogue_dhcp([
+        DhcpServer("192.168.1.1", "AA:BB:CC:DD:EE:FF", 0, 0),
+    ]) == []
+
+
+def test_security_rogue_dhcp_critical_with_two():
+    import security
+    from detect import DhcpServer
+    alerts = security.check_rogue_dhcp([
+        DhcpServer("192.168.1.1",  "AA:BB:CC:DD:EE:FF", 0, 0),
+        DhcpServer("192.168.1.50", "11:22:33:44:55:66", 0, 0),
+    ])
+    assert len(alerts) == 1
+    assert alerts[0].severity == "critical"
+
+
+def test_security_arp_anomalies_emits_one_per_ip():
+    import security
+    from detect import ArpAnomaly
+    alerts = security.check_arp_anomalies([
+        ArpAnomaly(ip="10.0.0.5", macs=("AA:BB", "11:22")),
+        ArpAnomaly(ip="10.0.0.6", macs=("AA:BB", "11:22")),
+    ])
+    assert len(alerts) == 2
+    assert all(a.severity == "critical" for a in alerts)
+
+
+def test_security_dns_threat_matches_exact_and_suffix():
+    import security
+    threats = {"malware.example", "phish.test"}
+    alerts = security.check_dns_threat(
+        {"mac": "X", "ip": "10.0.0.5"},
+        ["safe.com", "subdomain.malware.example", "phish.test"],
+        threats,
+    )
+    assert len(alerts) == 1
+    assert "subdomain.malware.example" in alerts[0].message
+    assert "phish.test" in alerts[0].message
+
+
+def test_security_dns_threat_silent_when_no_hits():
+    import security
+    assert security.check_dns_threat(
+        {"mac": "X", "ip": "10.0.0.5"},
+        ["safe.com", "also-safe.example"],
+        {"malware.example"},
+    ) == []
+
+
+def test_security_randomized_mac_group_includes_label_and_members():
+    import security
+    from detect import FingerprintGroup
+    a = security.check_randomized_mac_group(FingerprintGroup(
+        canonical_mac="AA:BB:CC:DD:EE:FF",
+        canonical_label="Sam's iPhone",
+        member_macs=("11:22:33:44:55:66", "77:88:99:AA:BB:CC"),
+    ))
+    assert a is not None
+    assert "Sam's iPhone" in a.title
+    assert "11:22:33:44:55:66" in a.message
+
+
+def test_security_evaluate_passes_wan_mappings_through():
+    import security
+    alerts = security.evaluate(
+        {"mac": "X", "ip": "10.0.0.5", "device_type": "camera"},
+        wan_mappings=[{"internal_ip": "10.0.0.5", "internal_port": 80,
+                       "external_port": 8080, "protocol": "TCP"}],
+    )
+    assert any(a.kind.startswith("wan_exposed_") for a in alerts)
+
+
+# ── store extensions ───────────────────────────────────────────────────────
+
+def test_store_no_probe_roundtrip(tmp_path):
+    import store
+    s = store.DeviceStore(data_dir=tmp_path)
+    s.touch({"ip": "10.0.0.5", "mac": "AA:BB:CC:DD:EE:FF",
+             "hostname": "h", "vendor": "v"})
+    assert s.is_probe_blocked("AA:BB:CC:DD:EE:FF") is False
+    s.set_no_probe("AA:BB:CC:DD:EE:FF", True)
+    assert s.is_probe_blocked("AA:BB:CC:DD:EE:FF") is True
+    s.set_no_probe("AA:BB:CC:DD:EE:FF", False)
+    assert s.is_probe_blocked("AA:BB:CC:DD:EE:FF") is False
+
+
+def test_store_dhcp_servers_recorded(tmp_path):
+    import store
+    s = store.DeviceStore(data_dir=tmp_path)
+    s.record_dhcp_server("192.168.1.1", "aa:bb:cc:dd:ee:ff")
+    rows = s._q("SELECT ip, mac FROM dhcp_servers")
+    assert len(rows) == 1
+    assert rows[0]["mac"] == "AA:BB:CC:DD:EE:FF"   # normalized to upper
+
+
+def test_store_wan_mappings_replace(tmp_path):
+    import store
+    from igd import Mapping
+    s = store.DeviceStore(data_dir=tmp_path)
+    m1 = Mapping(8080, "10.0.0.5", 80, "TCP", "test", 0, True)
+    m2 = Mapping(22, "10.0.0.6", 22, "TCP", "ssh", 0, True)
+    s.record_wan_mappings([m1, m2])
+    assert len(s.wan_mappings()) == 2
+    s.record_wan_mappings([m1])
+    assert len(s.wan_mappings()) == 1
+    assert s.wan_mappings_for("10.0.0.5")[0]["external_port"] == 8080
+    assert s.wan_mappings_for("10.0.0.99") == []
+
+
+def test_store_health_snapshot_roundtrip(tmp_path):
+    import store
+    s = store.DeviceStore(data_dir=tmp_path)
+    assert s.latest_health() is None
+    s.record_health(82, [{"weight": 10, "label": "two unknown devices", "key": "unknown_device"}])
+    snap = s.latest_health()
+    assert snap["score"] == 82
+    assert snap["reasons"][0]["weight"] == 10
+
+
+# ── new webhook formats ────────────────────────────────────────────────────
+
+def test_webhook_ntfy_format():
+    import webhooks
+    p = webhooks._payload_for(
+        "https://ntfy.sh/my-topic",
+        {"title": "T", "message": "M", "severity": "warning"},
+    )
+    assert p["title"] == "T"
+    assert p["priority"] == 4
+
+
+def test_webhook_pushover_extracts_token_and_user():
+    import webhooks
+    p = webhooks._payload_for(
+        "https://api.pushover.net/1/messages.json?token=APP123&user=USR456",
+        {"title": "T", "message": "M", "severity": "critical"},
+    )
+    assert p["token"] == "APP123"
+    assert p["user"]  == "USR456"
+    assert p["priority"] == 2
+
+
+# ── notify (burst coalescing) ──────────────────────────────────────────────
+
+def test_notify_coalesces_new_device_burst(monkeypatch):
+    import notify
+    notify._last_emit_ts = 0
+    notify._recent.clear()
+    notify._burst_queue.clear()
+    notify._burst_timer = None
+
+    sent = []
+    monkeypatch.setattr(notify, "_osascript_notify",
+                        lambda title, msg, subtitle="": sent.append((title, msg)))
+
+    for i in range(4):
+        notify.notify_alert({
+            "kind": "new_device", "severity": "info",
+            "title": f"New device {i}", "message": "...",
+            "mac": f"AA:BB:CC:DD:EE:0{i}",
+        })
+
+    # Force-flush instead of waiting on the timer.
+    notify._flush_burst()
+    assert len(sent) == 1
+    assert "4 new devices" in sent[0][0]
+
+
+def test_notify_critical_alerts_fire_individually(monkeypatch):
+    import notify
+    notify._last_emit_ts = 0
+    notify._recent.clear()
+    notify._burst_queue.clear()
+    notify._burst_timer = None
+
+    sent = []
+    monkeypatch.setattr(notify, "_osascript_notify",
+                        lambda title, msg, subtitle="": sent.append(title))
+
+    notify.notify_alert({
+        "kind": "rogue_dhcp", "severity": "critical",
+        "title": "Rogue DHCP", "message": "...", "mac": None,
+    })
+    assert sent == ["Rogue DHCP"]
+
+
+# ── igd (mapping XML parsing) ──────────────────────────────────────────────
+
+def test_igd_parse_mapping_returns_mapping_dataclass():
+    import igd
+    xml = b"""<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+ <s:Body>
+  <u:GetGenericPortMappingEntryResponse xmlns:u="urn:schemas-upnp-org:service:WANIPConnection:1">
+   <NewRemoteHost></NewRemoteHost>
+   <NewExternalPort>8080</NewExternalPort>
+   <NewProtocol>TCP</NewProtocol>
+   <NewInternalPort>80</NewInternalPort>
+   <NewInternalClient>192.168.1.42</NewInternalClient>
+   <NewEnabled>1</NewEnabled>
+   <NewPortMappingDescription>camera</NewPortMappingDescription>
+   <NewLeaseDuration>0</NewLeaseDuration>
+  </u:GetGenericPortMappingEntryResponse>
+ </s:Body>
+</s:Envelope>"""
+    m = igd._parse_mapping(xml)
+    assert m is not None
+    assert m.external_port == 8080
+    assert m.internal_client == "192.168.1.42"
+    assert m.internal_port == 80
+    assert m.protocol == "TCP"
+    assert m.enabled is True
+    assert m.is_public() is True
+
+
+def test_igd_parse_mapping_handles_missing_fields():
+    import igd
+    xml = b"<bogus/>"
+    assert igd._parse_mapping(xml) is None

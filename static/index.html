@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Inglorious Network Scanner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <div class="brand-mark">📡</div>
+    <div class="brand-stack">
+      <div class="brand-name">Inglorious</div>
+      <div class="brand-sub">Network Scanner</div>
+    </div>
+  </div>
+  <div class="hdiv"></div>
+  <div class="hstat">
+    <div class="hstat-l">Network</div>
+    <div class="hstat-v" id="hdr-ssid">—</div>
+  </div>
+  <div class="hstat">
+    <div class="hstat-l">CIDR</div>
+    <div class="hstat-v" id="hdr-net">—</div>
+  </div>
+  <div class="hstat">
+    <div class="hstat-l">Devices</div>
+    <div class="hstat-v" id="hdr-count">0</div>
+  </div>
+  <div class="hstat">
+    <div class="hstat-l">Alerts</div>
+    <div class="hstat-v" id="hdr-alerts">0</div>
+  </div>
+
+  <nav class="hnav">
+    <button class="navbtn active" data-tab="overview">Overview</button>
+    <button class="navbtn" data-tab="devices">Devices</button>
+    <button class="navbtn" data-tab="triage">Triage <span class="badge" id="nav-triage-badge"></span></button>
+    <button class="navbtn" data-tab="alerts">Security <span class="badge" id="nav-alert-badge"></span></button>
+    <button class="navbtn" data-tab="history">History</button>
+    <button class="navbtn" data-tab="settings">Settings</button>
+  </nav>
+
+  <div class="hright">
+    <div class="live-pill"><span class="live-dot"></span> live</div>
+    <div class="scantime" id="hdr-scantime">—</div>
+  </div>
+</header>
+
+<main>
+  <!-- ── OVERVIEW VIEW (Health Score hero) ───────────────────────────────── -->
+  <section class="tab" id="tab-overview">
+    <div class="health-hero">
+      <div class="health-score-wrap">
+        <div class="health-ring" id="health-ring">
+          <svg viewBox="0 0 120 120" class="health-ring-svg">
+            <circle cx="60" cy="60" r="52" class="health-ring-bg"></circle>
+            <circle cx="60" cy="60" r="52" class="health-ring-fg" id="health-ring-fg"
+              stroke-dasharray="326.7" stroke-dashoffset="326.7"></circle>
+          </svg>
+          <div class="health-num" id="health-num">—</div>
+          <div class="health-out-of">/ 100</div>
+        </div>
+        <div class="health-body">
+          <div class="health-band" id="health-band">Network Health</div>
+          <div class="health-headline" id="health-headline">Waiting for first scan…</div>
+          <ul class="health-reasons" id="health-reasons"></ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="pbar"><h2>What's on the network right now</h2></div>
+    <div class="overview-grid" id="overview-summary"></div>
+
+    <div class="pbar"><h2>Latest alerts</h2></div>
+    <div class="alerts-list mini" id="overview-alerts">
+      <div class="empty">No alerts yet.</div>
+    </div>
+  </section>
+
+  <!-- ── DEVICES VIEW ─────────────────────────────────────────────────────── -->
+  <section class="tab" id="tab-devices" hidden>
+    <div class="pbar">
+      <div class="filters">
+        <input type="search" id="dev-search" placeholder="Search IP, MAC, hostname, vendor…">
+        <select id="dev-type-filter">
+          <option value="">All types</option>
+        </select>
+        <select id="dev-known-filter">
+          <option value="all">All devices</option>
+          <option value="known">Known only</option>
+          <option value="unknown">Unknown only</option>
+          <option value="unidentified">Unidentified only</option>
+        </select>
+      </div>
+      <div class="legend">
+        <span class="dot dot-blue"></span> You
+        <span class="dot dot-green"></span> Known
+        <span class="dot dot-red"></span> Unknown
+        <span class="dot dot-gray"></span> Identifying…
+      </div>
+    </div>
+    <div class="device-grid" id="device-grid"></div>
+  </section>
+
+  <!-- ── TRIAGE VIEW ──────────────────────────────────────────────────────── -->
+  <section class="tab" id="tab-triage" hidden>
+    <div class="pbar">
+      <h2>Triage — name or block unknown devices</h2>
+      <div class="filters-right">
+        <button id="triage-bulk-known" class="btn btn-primary">Mark all as Known</button>
+      </div>
+    </div>
+    <p class="help" style="padding:0 22px">
+      Quick pass through every unknown device on your network. Give each one a friendly
+      name so future joins of the same device don't worry you. If you don't recognize
+      a device, change your WiFi password and remove it from the router.
+    </p>
+    <div class="triage-list" id="triage-list">
+      <div class="empty">Nothing to triage — every device is marked as known.</div>
+    </div>
+  </section>
+
+  <!-- ── ALERTS VIEW ──────────────────────────────────────────────────────── -->
+  <section class="tab" id="tab-alerts" hidden>
+    <div class="pbar">
+      <h2>Security Alerts</h2>
+      <div>
+        <button id="ack-all" class="btn btn-ghost">Mark all as read</button>
+      </div>
+    </div>
+    <div class="alerts-list" id="alerts-list">
+      <div class="empty">No alerts yet. New devices and risky ports will show up here.</div>
+    </div>
+  </section>
+
+  <!-- ── HISTORY VIEW ─────────────────────────────────────────────────────── -->
+  <section class="tab" id="tab-history" hidden>
+    <div class="pbar">
+      <h2>Network Population</h2>
+    </div>
+    <div class="chart-wrap">
+      <canvas id="history-chart" width="800" height="240"></canvas>
+    </div>
+    <div class="pbar">
+      <h2>Known Devices</h2>
+    </div>
+    <div class="known-list" id="known-list"></div>
+  </section>
+
+  <!-- ── SETTINGS VIEW ────────────────────────────────────────────────────── -->
+  <section class="tab" id="tab-settings" hidden>
+    <div class="pbar"><h2>Notifications &amp; Webhooks</h2></div>
+    <div class="section">
+      <p class="help">
+        Send security alerts to Discord, Slack, Pushover, ntfy, or any HTTP endpoint.
+        URLs are auto-detected and formatted to match the receiver — pick a flavor
+        from the dropdown or just paste the webhook URL.
+      </p>
+      <div class="webhook-form">
+        <input type="text" id="wh-label" placeholder="Label (e.g. 'Home Discord')">
+        <input type="url" id="wh-url" placeholder="https://discord.com/api/webhooks/...">
+        <select id="wh-severity">
+          <option value="info">All alerts</option>
+          <option value="warning">Warnings &amp; criticals only</option>
+          <option value="critical">Critical only</option>
+        </select>
+        <button id="wh-add" class="btn">Add webhook</button>
+      </div>
+      <div class="webhook-list" id="webhook-list"></div>
+    </div>
+
+    <div class="pbar"><h2>Advanced: Join Hook</h2></div>
+    <div class="section">
+      <p class="help">
+        Shell command run when a new device joins. Receives <code>$DEVICE_IP</code>,
+        <code>$DEVICE_MAC</code>, <code>$DEVICE_VENDOR</code>, <code>$DEVICE_HOSTNAME</code>,
+        <code>$DEVICE_TYPE</code>, <code>$SSID</code> as environment variables.
+        Leave empty to disable.
+      </p>
+      <textarea id="hook-script" placeholder="say &quot;new device joined: $DEVICE_HOSTNAME&quot;"></textarea>
+      <button id="hook-save" class="btn">Save hook</button>
+    </div>
+
+    <div class="pbar"><h2>Privacy</h2></div>
+    <div class="section privacy-block">
+      <p>
+        <strong>Everything stays on your Mac.</strong> No cloud, no accounts, no
+        telemetry. INS only talks to the public internet to check GitHub for new
+        releases and to look up MAC vendor names from a local database.
+      </p>
+      <p>
+        Webhooks you configure here send to whichever URL <em>you</em> provide.
+        Disable any of them above to stop their traffic immediately.
+      </p>
+      <p class="help-fine">
+        Read the full statement and threat model in <code>SECURITY.md</code> in
+        the source tree.
+      </p>
+    </div>
+  </section>
+</main>
+
+<!-- Slide-over for "what does this mean" alert help. -->
+<aside class="drawer" id="alert-drawer" hidden>
+  <div class="drawer-head">
+    <div class="drawer-title" id="drawer-title">Alert</div>
+    <button class="btn btn-ghost" id="drawer-close">Close</button>
+  </div>
+  <div class="drawer-body" id="drawer-body"></div>
+</aside>
+<div class="drawer-scrim" id="drawer-scrim" hidden></div>
+
+<footer class="page-footer">
+  <span>Inglorious Network Scanner</span>
+  <span class="dot-sep">·</span>
+  <span>v<span id="hdr-version">2.0</span></span>
+  <span class="dot-sep">·</span>
+  <span>Local-only, no telemetry, no cloud.</span>
+  <span class="dot-sep">·</span>
+  <a href="https://github.com/mrsausagerolls/netscan" target="_blank" rel="noopener">Source</a>
+  <span class="dot-sep">·</span>
+  <span>by Inglorious Labs</span>
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

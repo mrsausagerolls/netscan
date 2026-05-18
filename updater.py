@@ -1,4 +1,4 @@
-"""Check GitHub Releases for a newer NetScan version."""
+"""Check GitHub Releases for a newer Inglorious Network Scanner version."""
 
 import json
 import urllib.request
@@ -27,7 +27,7 @@ def check_for_update(current: str = __version__) -> dict | None:
             _API_URL,
             headers={
                 "Accept":     "application/vnd.github+json",
-                "User-Agent": f"NetScan/{current}",
+                "User-Agent": f"InglNetScan/{current}",
             },
         )
         with urllib.request.urlopen(req, timeout=5) as resp:

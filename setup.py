@@ -1,22 +1,28 @@
-"""py2app build script — run: python setup.py py2app"""
+"""py2app build script — run: python setup.py py2app
+
+NOTE: until Inglorious Labs is a registered Apple Developer, the .app produced
+by this script is unsigned and unnotarized. macOS Gatekeeper will block it for
+end users. The supported install path is `get.sh` (source + LaunchAgent).
+This script is kept so a signed build can be cut later without code changes.
+"""
 
 from setuptools import setup
-from version import __version__
+from version import __version__, __app_name__, __org__
 
 APP     = ["app.py"]
 OPTIONS = {
     "argv_emulation": False,  # Must be False for menu-bar apps
     "plist": {
-        "CFBundleName":                "NetScan",
-        "CFBundleDisplayName":         "NetScan",
+        "CFBundleName":                "InglNetScan",
+        "CFBundleDisplayName":         __app_name__,
         "CFBundleIdentifier":          "co.ingloriouslabs.netscan",
         "CFBundleVersion":             __version__,
         "CFBundleShortVersionString":  __version__,
-        "CFBundleGetInfoString":       f"NetScan {__version__} — Made by Inglorious Labs",
-        "NSHumanReadableCopyright":    "© 2026 Inglorious Labs",
+        "CFBundleGetInfoString":       f"{__app_name__} {__version__} — Made by {__org__}",
+        "NSHumanReadableCopyright":    f"© 2026 {__org__}",
         "LSUIElement":                 True,   # Hide from Dock
         "NSLocationWhenInUseUsageDescription":
-            "NetScan reads the WiFi SSID to display your current network name.",
+            f"{__app_name__} reads the WiFi SSID to display your current network name.",
     },
     "packages": [
         "rumps",
@@ -28,12 +34,15 @@ OPTIONS = {
         "CoreLocation",
         "SystemConfiguration",
     ],
-    "includes": ["scanner", "store", "dashboard", "wol", "updater", "version"],
+    "includes": [
+        "scanner", "store", "dashboard", "wol", "updater", "version",
+        "classify", "security", "events", "notify", "webhooks",
+    ],
     "excludes": ["tkinter", "unittest", "xmlrpc"],
 }
 
 setup(
-    name    = "NetScan",
+    name    = __app_name__,
     version = __version__,
     app     = APP,
     options = {"py2app": OPTIONS},

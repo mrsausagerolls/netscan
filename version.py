@@ -1,2 +1,6 @@
-__version__ = "1.0.2"
-GITHUB_REPO = "mrsausagerolls/netscan"
+__version__   = "2.0.0"
+__app_name__  = "Inglorious Network Scanner"
+__short_name__ = "INS"
+__org__       = "Inglorious Labs"
+GITHUB_REPO   = "mrsausagerolls/netscan"
+LAUNCH_LABEL  = "co.ingloriouslabs.netscan"

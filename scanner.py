@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""WiFi Scanner — lists all devices on your local WiFi network."""
+"""Inglorious Network Scanner — lists all devices on your local WiFi network."""
 
 import argparse
 import re
@@ -198,7 +198,7 @@ def _http_fingerprint(ip: str, port: int, tls: bool = False) -> tuple[str, str]:
             ctx.verify_mode = ssl.CERT_NONE
         req = urllib.request.Request(
             f"{scheme}://{ip}:{port}/",
-            headers={"User-Agent": "NetScan/1.0"},
+            headers={"User-Agent": "InglNetScan/2.0"},
         )
         resp = urllib.request.urlopen(req, timeout=2, context=ctx)
         server = resp.headers.get("Server", "")
@@ -428,7 +428,7 @@ def main():
                         help="Re-scan every N seconds, highlight changes (default: 30)")
     args = parser.parse_args()
 
-    console.rule("[bold cyan]WiFi Scanner[/bold cyan]")
+    console.rule("[bold cyan]Inglorious Network Scanner[/bold cyan]")
     iface, local_ip, network = get_wifi_info()
     console.print(
         f"  Interface: [cyan]{iface}[/cyan]   "
