@@ -224,6 +224,21 @@ function deviceMatchesFilter(d) {
   return true;
 }
 
+// Persisted across reloads. "grid" (default) or "list".
+let DEVICE_VIEW = localStorage.getItem("ins.devicesView") || "grid";
+
+function setDevicesView(mode) {
+  DEVICE_VIEW = (mode === "list") ? "list" : "grid";
+  localStorage.setItem("ins.devicesView", DEVICE_VIEW);
+  document.querySelectorAll(".vtbtn").forEach(b =>
+    b.classList.toggle("active", b.dataset.view === DEVICE_VIEW));
+  $("#device-grid").hidden = DEVICE_VIEW !== "grid";
+  $("#device-list").hidden = DEVICE_VIEW !== "list";
+  if (STATE) paintDevices();
+}
+document.querySelectorAll(".vtbtn").forEach(b =>
+  b.addEventListener("click", () => setDevicesView(b.dataset.view)));
+
 function paintDevices() {
   // Rebuild type filter once per refresh to reflect newly-classified types.
   const seenTypes = new Set(STATE.devices.map(d => d.device_type).filter(Boolean));
@@ -236,8 +251,20 @@ function paintDevices() {
     }).join("");
   if ([...seenTypes].includes(prev)) sel.value = prev;
 
-  const grid = $("#device-grid");
+  // Ensure the right view container is visible (handles first paint).
+  $("#device-grid").hidden = DEVICE_VIEW !== "grid";
+  $("#device-list").hidden = DEVICE_VIEW !== "list";
+
   const visible = STATE.devices.filter(deviceMatchesFilter);
+  if (DEVICE_VIEW === "list") {
+    paintDevicesList(visible);
+  } else {
+    paintDevicesGrid(visible);
+  }
+}
+
+function paintDevicesGrid(visible) {
+  const grid = $("#device-grid");
   if (!visible.length) {
     grid.innerHTML = `<div class="empty">No devices match the current filter.</div>`;
     return;
@@ -246,6 +273,50 @@ function paintDevices() {
   grid.querySelectorAll("[data-action]").forEach(el => {
     el.addEventListener("click", onDeviceAction);
   });
+}
+
+function paintDevicesList(visible) {
+  const body = $("#device-list-body");
+  if (!visible.length) {
+    body.innerHTML = `<div class="empty">No devices match the current filter.</div>`;
+    return;
+  }
+  body.innerHTML = visible.map(deviceListRow).join("");
+  body.querySelectorAll("[data-action]").forEach(el => {
+    el.addEventListener("click", (e) => {
+      e.stopPropagation();
+      onDeviceAction(e);
+    });
+  });
+  body.querySelectorAll("[data-row-mac]").forEach(row =>
+    row.addEventListener("click", () => openDeviceStory(row.dataset.rowMac)));
+}
+
+function deviceListRow(d) {
+  const dotKlass = d.me ? "s-me"
+                 : d.is_known ? "s-known"
+                 : (d.device_type === "unknown" || (d.type_confidence ?? 0) < 0.3) ? "s-identifying"
+                 : "s-unknown";
+  const name = bestName(d) || "(unnamed)";
+  const ports = (d.ports || []).slice(0, 6).map(p =>
+    `<span class="port-chip${RISKY_PORTS.has(p) ? " risky" : ""}">${p}</span>`).join("");
+  const extraPortCount = Math.max(0, (d.ports || []).length - 6);
+  const action = d.me ? `<span class="dl-self">you</span>`
+    : d.is_known
+      ? `<button class="btn btn-tiny btn-danger" data-action="unknown" data-mac="${escHtml(d.mac)}">Unknown</button>`
+      : `<button class="btn btn-tiny btn-primary" data-action="known" data-mac="${escHtml(d.mac)}" data-name="${escHtml(name)}">Mark Known</button>`;
+  return `
+    <div class="dl-row" data-row-mac="${escHtml(d.mac)}">
+      <div class="dl-c dl-c-status"><span class="dc-status ${dotKlass}"></span></div>
+      <div class="dl-c dl-c-icon">${escHtml(d.type_icon || "❔")}</div>
+      <div class="dl-c dl-c-name">${escHtml(name)}</div>
+      <div class="dl-c dl-c-ip">${escHtml(d.ip || "—")}</div>
+      <div class="dl-c dl-c-mac">${escHtml(d.mac || "—")}</div>
+      <div class="dl-c dl-c-vendor">${escHtml(d.vendor || "—")}</div>
+      <div class="dl-c dl-c-type">${escHtml(d.type_label || "—")}</div>
+      <div class="dl-c dl-c-ports">${ports}${extraPortCount ? `<span class="dl-ports-more">+${extraPortCount}</span>` : ""}</div>
+      <div class="dl-c dl-c-actions">${action}</div>
+    </div>`;
 }
 
 // Pick the best human-readable name we can derive from what we know about a
@@ -905,6 +976,7 @@ function startSSE() {
 
 // ── boot ──────────────────────────────────────────────────────────────────
 showTab(CURRENT_TAB);
+setDevicesView(DEVICE_VIEW);   // honor persisted preference; sync toggle UI
 refresh().then(showOnboardingIfNeeded);
 startSSE();
 // Fallback polling — far less frequent now that SSE pushes deltas instantly.

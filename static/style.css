@@ -458,3 +458,68 @@ textarea#hook-script:focus{border-color:var(--cyan)}
 .bw-bar{display:block;width:6px;border-radius:1px}
 .bw-bar.bw-in{background:var(--cyan)}
 .bw-bar.bw-out{background:var(--purple)}
+
+/* ── DEVICES VIEW TOGGLE (grid / list) ──────────────────────────────────── */
+.view-toggle{
+  display:inline-flex;align-items:center;gap:2px;
+  background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:2px;
+  margin:0 12px 0 8px;flex-shrink:0;
+}
+.vtbtn{
+  background:transparent;border:0;color:var(--text3);cursor:pointer;
+  width:26px;height:24px;display:inline-flex;align-items:center;justify-content:center;
+  border-radius:4px;padding:0;transition:all .12s ease;
+}
+.vtbtn:hover{color:var(--text);background:var(--bg3)}
+.vtbtn.active{color:var(--cyan);background:var(--cyan-a)}
+.vtbtn svg{fill:currentColor}
+
+/* ── DEVICES LIST VIEW ──────────────────────────────────────────────────── */
+.device-list{padding:6px 22px 22px;display:flex;flex-direction:column}
+.dl-head, .dl-row{
+  display:grid;
+  grid-template-columns:
+    24px        /* status dot   */
+    28px        /* type icon    */
+    minmax(140px, 1.4fr)   /* name */
+    110px       /* ip           */
+    150px       /* mac          */
+    minmax(120px, 1fr)     /* vendor */
+    minmax(100px, 0.8fr)   /* type   */
+    minmax(120px, 1fr)     /* ports  */
+    110px;      /* actions      */
+  gap:10px;align-items:center;
+  font-family:var(--mono);font-size:11px;
+}
+.dl-head{
+  color:var(--text3);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;
+  padding:8px 10px;border-bottom:1px solid var(--border);font-weight:600;
+}
+.dl-row{
+  padding:8px 10px;
+  border-bottom:1px solid var(--border);
+  color:var(--text2);cursor:pointer;
+  transition:background .1s ease;
+}
+.dl-row:hover{background:var(--bg2)}
+.dl-row:last-child{border-bottom:0}
+.dl-c{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dl-c-name{color:var(--text);font-family:var(--ui);font-size:12px;font-weight:500}
+.dl-c-icon{font-size:14px;text-align:center}
+.dl-c-status{display:flex;align-items:center;justify-content:center}
+.dl-c-status .dc-status{margin:0}
+.dl-c-mac, .dl-c-ip{color:var(--text2)}
+.dl-c-type{color:var(--text3);font-size:10.5px;letter-spacing:.02em}
+.dl-c-ports{display:flex;flex-wrap:nowrap;gap:3px;overflow:hidden}
+.dl-c-ports .port-chip{font-size:9px;padding:1px 4px}
+.dl-ports-more{font-size:9px;color:var(--text3);align-self:center;margin-left:2px}
+.dl-c-actions{justify-self:end;display:flex;align-items:center;gap:6px}
+.dl-self{font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--blue);font-weight:600}
+
+@media (max-width: 980px){
+  .dl-head, .dl-row{
+    grid-template-columns: 24px 28px minmax(120px,1.2fr) 100px 150px 110px;
+  }
+  .dl-c-vendor, .dl-c-type, .dl-c-ports{display:none}
+  .dl-head .dl-c-vendor, .dl-head .dl-c-type, .dl-head .dl-c-ports{display:none}
+}
