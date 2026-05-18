@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from threading import Lock
@@ -15,6 +16,8 @@ if getattr(sys, "frozen", False):
 else:
     _DATA = Path(__file__).parent / "data"
 
+_FLUSH_INTERVAL = 5  # seconds — batches `seen.json` / `history.json` writes
+
 
 class DeviceStore:
     def __init__(self):
@@ -24,6 +27,8 @@ class DeviceStore:
         self._seen    = self._load("seen.json",    {})   # mac → {first_seen, …}
         self._history = self._load("history.json", [])   # [{ts, count, ssid}]
         self._hook    = self._load("hook.json",    {"on_join": ""})
+        self._dirty: set[str] = set()
+        threading.Thread(target=self._flush_loop, daemon=True).start()
 
     # ── Allowlist ────────────────────────────────────────────────────────────
 
@@ -36,12 +41,13 @@ class DeviceStore:
     def add_known(self, mac: str, name: str = ""):
         with self._lock:
             self._known[mac] = {"name": name, "added": time.time()}
-            self._save("known.json", self._known)
+        # User-initiated — flush immediately so UI feedback is consistent.
+        self._save_now("known.json", self._known)
 
     def remove_known(self, mac: str):
         with self._lock:
             self._known.pop(mac, None)
-            self._save("known.json", self._known)
+        self._save_now("known.json", self._known)
 
     @property
     def known(self) -> dict:
@@ -66,7 +72,7 @@ class DeviceStore:
                 "seen_count": rec.get("seen_count", 0) + 1,
             })
             self._seen[mac] = rec
-            self._save("seen.json", self._seen)
+            self._dirty.add("seen.json")
         device["first_seen"] = rec["first_seen"]
         device["is_known"]   = self.is_known(mac)
         device["known_name"] = self.known_name(mac)
@@ -76,13 +82,13 @@ class DeviceStore:
         with self._lock:
             if mac in self._seen:
                 self._seen[mac]["ports"] = ports
-                self._save("seen.json", self._seen)
+                self._dirty.add("seen.json")
 
     def update_fingerprint(self, mac: str, hints: dict):
         with self._lock:
             if mac in self._seen:
                 self._seen[mac]["fingerprint"] = hints
-                self._save("seen.json", self._seen)
+                self._dirty.add("seen.json")
 
     @property
     def all_seen(self) -> dict:
@@ -96,7 +102,7 @@ class DeviceStore:
             self._history.append({"ts": time.time(), "count": count, "ssid": ssid or ""})
             if len(self._history) > 2000:
                 self._history = self._history[-2000:]
-            self._save("history.json", self._history)
+            self._dirty.add("history.json")
 
     @property
     def history(self) -> list:
@@ -113,7 +119,7 @@ class DeviceStore:
     def set_hook_script(self, script: str):
         with self._lock:
             self._hook["on_join"] = script
-            self._save("hook.json", self._hook)
+        self._save_now("hook.json", self._hook)
 
     def run_hook(self, device: dict, ssid: str):
         script = self.hook_script.strip()
@@ -135,5 +141,37 @@ class DeviceStore:
         except (FileNotFoundError, json.JSONDecodeError):
             return default
 
-    def _save(self, name: str, data):
-        (_DATA / name).write_text(json.dumps(data, indent=2))
+    def _snapshot(self, name: str):
+        if name == "seen.json":    return dict(self._seen)
+        if name == "history.json": return list(self._history)
+        if name == "known.json":   return dict(self._known)
+        if name == "hook.json":    return dict(self._hook)
+        raise KeyError(name)
+
+    def _write_atomic(self, name: str, data):
+        target = _DATA / name
+        tmp = target.with_suffix(target.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, indent=2))
+        os.replace(tmp, target)
+
+    def _save_now(self, name: str, data):
+        with self._lock:
+            snapshot = json.loads(json.dumps(data))  # deep copy via JSON
+            self._dirty.discard(name)
+        self._write_atomic(name, snapshot)
+
+    def _flush_loop(self):
+        while True:
+            time.sleep(_FLUSH_INTERVAL)
+            try:
+                self._flush_now()
+            except Exception:
+                pass
+
+    def _flush_now(self):
+        with self._lock:
+            dirty = self._dirty
+            self._dirty = set()
+            snapshots = {n: self._snapshot(n) for n in dirty}
+        for name, data in snapshots.items():
+            self._write_atomic(name, data)

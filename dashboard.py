@@ -290,6 +290,9 @@ textarea:focus{outline:none;border-color:var(--cyan)}
 const PN = {22:'SSH',80:'HTTP',443:'HTTPS',554:'RTSP',8080:'ALT',8883:'MQTT',9100:'PRN',5000:'UPNP'};
 let chart = null, hookLoaded = false, sortCol = 'ip', sortDir = 1, lastDevices = [];
 
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
 function fmtTs(ts) {
   if (!ts) return '';
   const d = new Date(ts*1000), n = new Date();
@@ -333,7 +336,7 @@ function getSorted(devices) {
 }
 
 function cpBtn(val) {
-  return `<button class="bico" onclick="cp(this,'${val}')">⎘</button>`;
+  return `<button class="bico" onclick="cp(this,'${esc(val)}')">⎘</button>`;
 }
 
 function cp(btn, text) {
@@ -387,28 +390,28 @@ function renderDevices(devices) {
     const isMe=d.me,isKnown=d.is_known;
     const rc=isMe?'tr-me':isKnown?'tr-known':'tr-unknown';
     const dc=isMe?'b':isKnown?'g':'r';
-    const lbl=isMe?'You':isKnown?(d.known_name||'Known'):'Unknown';
+    const lbl=isMe?'You':isKnown?esc(d.known_name||'Known'):'Unknown';
     const host=(d.hostname&&d.hostname!='—')?d.hostname:'';
-    const nameHtml=d.known_name
-      ?'<div class="np">'+d.known_name+'</div>'+(host?'<div class="ns">'+host+'</div>':'')
-      :(host?'<span class="ns" style="font-size:11px;color:var(--text2)">'+host+'</span>':'');
-    const ports=(d.ports||[]).map(p=>'<span class="pc">'+(PN[p]||p)+'</span>').join('');
+    const ports=(d.ports||[]).map(p=>'<span class="pc">'+esc(PN[p]||p)+'</span>').join('');
+    const macAttr=esc(d.mac);
+    const hostAttr=esc(host);
     const knowBtn=isMe?'':(isKnown
-      ?`<button class="br" onclick="toggleKnown('${d.mac}',true,'')">Unmark</button>`
-      :`<button onclick="toggleKnown('${d.mac}',false,'${(host||'').replace(/'/g,'')}')">Mark Known</button>`);
+      ?`<button class="br" onclick="toggleKnown('${macAttr}',true,'')">Unmark</button>`
+      :`<button onclick="toggleKnown('${macAttr}',false,'${hostAttr}')">Mark Known</button>`);
+    const vendorCell=(d.vendor&&d.vendor!='—')
+      ? esc(d.vendor)
+      : (d.fingerprint
+          ? `<span style="color:var(--accent);font-style:italic">${esc(d.fingerprint)}</span>`
+          : '<span style="color:var(--text3)">—</span>');
     return `<tr class="${rc}">`
       +`<td><div class="sc"><span class="sd ${dc}"></span><span class="sl ${dc}">${lbl}</span></div></td>`
-      +`<td><div class="ipc"><span class="ipv">${d.ip}</span>${cpBtn(d.ip)}</div></td>`
-      +`<td><span class="macv">${d.mac}</span> ${cpBtn(d.mac)}</td>`
-      +`<td><span class="vv">${(()=>{
-        if(d.vendor&&d.vendor!='—') return d.vendor;
-        if(d.fingerprint) return `<span style="color:var(--accent);font-style:italic">${d.fingerprint}</span>`;
-        return '<span style="color:var(--text3)">—</span>';
-      })()}</span></td>`
+      +`<td><div class="ipc"><span class="ipv">${esc(d.ip)}</span>${cpBtn(d.ip)}</div></td>`
+      +`<td><span class="macv">${esc(d.mac)}</span> ${cpBtn(d.mac)}</td>`
+      +`<td><span class="vv">${vendorCell}</span></td>`
       +`<td>${fmtLat(d.latency)}</td>`
       +`<td><div class="ports">${ports||'<span style="color:var(--text3);font-size:10px">—</span>'}</div></td>`
       +`<td><span class="ts">${fmtTs(d.first_seen)}</span></td>`
-      +`<td><div class="acts">${knowBtn}<button class="bb" onclick="wol('${d.mac}',this)">WoL</button></div></td>`
+      +`<td><div class="acts">${knowBtn}<button class="bb" onclick="wol('${macAttr}',this)">WoL</button></div></td>`
       +`</tr>`;
   }).join('');
 }
@@ -420,8 +423,8 @@ function renderKnown(known) {
   if (!entries.length){el.innerHTML='<div class="ki"><span style="color:var(--text3);font-size:11px">No known devices yet</span></div>';return;}
   el.innerHTML=entries.map(([mac,info])=>
     `<div class="ki">`
-    +`<div><div class="kn">${info.name||'(unnamed)'}</div><div class="km">${mac}</div></div>`
-    +`<button class="br" style="font-size:10px;padding:3px 8px" onclick="api('/api/known/remove',{mac:'${mac}'})">✕</button>`
+    +`<div><div class="kn">${esc(info.name||'(unnamed)')}</div><div class="km">${esc(mac)}</div></div>`
+    +`<button class="br" style="font-size:10px;padding:3px 8px" onclick="api('/api/known/remove',{mac:'${esc(mac)}'})">✕</button>`
     +`</div>`
   ).join('');
 }
@@ -482,6 +485,13 @@ class _Handler(BaseHTTPRequestHandler):
     store = None
     get_state = None       # callable → dict
     on_known_change = None # callable → triggers menu redraw
+    allowed_origins: set = set()  # populated in start()
+
+    def _origin_ok(self) -> bool:
+        origin = self.headers.get("Origin") or self.headers.get("Referer", "")
+        if not origin:
+            return False
+        return any(origin == a or origin.startswith(a + "/") for a in self.allowed_origins)
 
     def do_GET(self):
         if self.path == "/":
@@ -494,6 +504,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(404, "text/plain", b"Not found")
 
     def do_POST(self):
+        if not self._origin_ok():
+            self._send(403, "application/json", b'{"error":"forbidden origin"}')
+            return
+
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length) or b"{}")
 
@@ -524,7 +538,6 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
 
@@ -542,6 +555,10 @@ def start(store, get_state, on_known_change=None, port: int = PORT):
     _Handler.store            = store
     _Handler.get_state        = get_state
     _Handler.on_known_change  = on_known_change
+    _Handler.allowed_origins  = {
+        f"http://127.0.0.1:{port}",
+        f"http://localhost:{port}",
+    }
 
     # Retry binding for up to 15 s in case the previous instance's socket is
     # still in TIME_WAIT after a rapid launchd restart.

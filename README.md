@@ -29,12 +29,11 @@ sudo python app.py
 
 ### Launch at login (LaunchAgent)
 
-Edit `com.wifiscanner.plist` — set the `ProgramArguments` paths to match your installation — then:
-
 ```bash
-cp com.wifiscanner.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.wifiscanner.plist
+./install.sh
 ```
+
+`install.sh` substitutes the venv Python path and `app.py` path into `com.wifiscanner.plist.tmpl` and loads it as a user LaunchAgent.
 
 ## Build DMG
 
@@ -54,3 +53,16 @@ Grant it in: **System Settings → Privacy & Security → Location Services → 
 - macOS 13+, Apple Silicon or Intel
 - Python 3.11+
 - `sudo` / root for ARP scanning (falls back to ping sweep otherwise)
+
+## Dashboard security
+
+The dashboard binds to `127.0.0.1` only. Mutating endpoints (`/api/known/*`, `/api/hook`, `/api/wol`) require a same-origin `Origin` or `Referer` header (`http://127.0.0.1:8765` or `http://localhost:8765`); cross-origin requests are rejected with 403. The join hook stores an arbitrary shell script, so this check is what prevents a malicious webpage from silently installing one.
+
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest tests/ -v
+```
+
+Smoke tests cover the WoL packet layout, MAC/IP filters, store roundtrip, and the dashboard origin check.
