@@ -210,6 +210,56 @@
       </div>
     </div>
 
+    <div class="pbar"><h2>Router quarantine (experimental)</h2></div>
+    <div class="section">
+      <p class="help">
+        Connect INS to your home router so the <strong>Block on router</strong>
+        button in the device story drawer actually kicks the device off the WiFi.
+        Currently supports Unifi (UDM-Pro / Dream Machine / Cloud Key) via REST
+        and OpenWrt via SSH. Eero is on the roadmap.
+        <br><br>
+        <strong>Experimental:</strong> author can't test against your specific
+        hardware. Use the Test Connection button before relying on this.
+      </p>
+      <div class="setting-row">
+        <label for="router-kind">Router type:</label>
+        <select id="router-kind">
+          <option value="none">None / disabled</option>
+          <option value="unifi">Unifi (REST)</option>
+          <option value="openwrt">OpenWrt (SSH)</option>
+        </select>
+      </div>
+      <div class="setting-row">
+        <label for="router-host">Host / URL:</label>
+        <input type="text" id="router-host" placeholder="https://10.0.0.1:8443 (unifi) or 10.0.0.1 (openwrt)">
+      </div>
+      <div class="setting-row">
+        <label for="router-user">Username:</label>
+        <input type="text" id="router-user" placeholder="admin">
+      </div>
+      <div class="setting-row">
+        <label for="router-pass">Password:</label>
+        <input type="password" id="router-pass" placeholder="(empty leaves existing unchanged)">
+      </div>
+      <div class="setting-row" data-router-unifi>
+        <label for="router-site">Unifi site:</label>
+        <input type="text" id="router-site" placeholder="default">
+      </div>
+      <div class="setting-row" data-router-openwrt hidden>
+        <label for="router-ssh-port">SSH port:</label>
+        <input type="text" id="router-ssh-port" placeholder="22">
+      </div>
+      <div class="setting-row" data-router-openwrt hidden>
+        <label for="router-iface">Wireless iface idx:</label>
+        <input type="text" id="router-iface" placeholder="0">
+      </div>
+      <div class="setting-row">
+        <button id="router-save" class="btn btn-primary">Save router config</button>
+        <button id="router-test" class="btn">Test connection</button>
+        <span class="settings-status" id="router-status"></span>
+      </div>
+    </div>
+
     <div class="pbar"><h2>Privacy</h2></div>
     <div class="section privacy-block">
       <p>

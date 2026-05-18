@@ -644,7 +644,14 @@ async function openDeviceStory(mac) {
       ? (story.wan_exposed || []).map(m => `<div class="dstory-wan">⚠ External port ${escHtml(m.external_port)}/${escHtml(m.protocol)} forwarded to internal port ${escHtml(m.internal_port)}</div>`).join("")
       : "";
 
+    const routerKind = (STATE.settings && STATE.settings.router_kind) || "none";
+    const blockButton = (routerKind === "none" || d.me)
+      ? ""
+      : `<button class="btn btn-danger" id="router-block-mac" data-mac="${escHtml(d.mac)}">⛔ Block on router</button>
+         <button class="btn" id="router-unblock-mac" data-mac="${escHtml(d.mac)}">Unblock</button>`;
+
     $("#device-drawer-body").innerHTML = `
+      ${blockButton ? `<div class="dstory-router-actions">${blockButton}<span class="dstory-router-status" id="dstory-router-status"></span></div>` : ""}
       <h3>Identity</h3>
       <dl class="dstory-meta">
         <dt>IP</dt><dd>${escHtml(d.ip || "—")}</dd>
@@ -667,6 +674,19 @@ async function openDeviceStory(mac) {
 
     $("#device-drawer").hidden = false;
     $("#drawer-scrim").hidden = false;
+
+    const wireRouter = (sel, path, verb) =>
+      document.getElementById(sel)?.addEventListener("click", async (e) => {
+        const btn = e.currentTarget;
+        const status = $("#dstory-router-status");
+        const mac = btn.dataset.mac;
+        if (verb === "block" && !confirm(`Block ${mac} on your router? They'll be kicked off the WiFi immediately.`)) return;
+        status.textContent = `${verb}ing…`;
+        const r = await api(path, { mac });
+        status.textContent = r.ok ? `${verb}ed ✓` : `${verb} failed: ${r.error || "unknown"}`;
+      });
+    wireRouter("router-block-mac",   "/api/router/block",   "block");
+    wireRouter("router-unblock-mac", "/api/router/unblock", "unblock");
   } catch (e) { /* swallow */ }
 }
 function closeDeviceDrawer() {
@@ -756,6 +776,62 @@ $("#settings-save")?.addEventListener("click", async () => {
   setTimeout(() => { status.textContent = ""; }, 1500);
   refresh();
 });
+
+// ── router config UI ───────────────────────────────────────────────────────
+function paintRouterSettings() {
+  const s = (STATE.settings || {});
+  const kind = $("#router-kind");
+  if (kind && document.activeElement !== kind) kind.value = s.router_kind || "none";
+  const fields = [
+    ["#router-host", s.router_host], ["#router-user", s.router_user],
+    ["#router-site", s.router_site], ["#router-ssh-port", s.router_ssh_port],
+    ["#router-iface", s.router_iface],
+  ];
+  for (const [sel, val] of fields) {
+    const el = document.querySelector(sel);
+    if (el && document.activeElement !== el) el.value = val ?? "";
+  }
+  // Show / hide kind-specific rows.
+  const k = (s.router_kind || "none");
+  document.querySelectorAll("[data-router-unifi]").forEach(el =>
+    el.hidden = (k !== "unifi"));
+  document.querySelectorAll("[data-router-openwrt]").forEach(el =>
+    el.hidden = (k !== "openwrt"));
+}
+$("#router-kind")?.addEventListener("change", () => {
+  const k = $("#router-kind").value;
+  document.querySelectorAll("[data-router-unifi]").forEach(el =>
+    el.hidden = (k !== "unifi"));
+  document.querySelectorAll("[data-router-openwrt]").forEach(el =>
+    el.hidden = (k !== "openwrt"));
+});
+$("#router-save")?.addEventListener("click", async () => {
+  const status = $("#router-status");
+  status.textContent = "Saving…";
+  const body = {
+    router_kind:     $("#router-kind").value,
+    router_host:     $("#router-host").value.trim(),
+    router_user:     $("#router-user").value.trim(),
+    router_site:     $("#router-site").value.trim() || "default",
+    router_ssh_port: $("#router-ssh-port").value.trim() || "22",
+    router_iface:    $("#router-iface").value.trim() || "0",
+  };
+  const pwd = $("#router-pass").value;
+  if (pwd) body.router_pass = pwd;
+  await api("/api/settings/save", body);
+  $("#router-pass").value = "";
+  status.textContent = "Saved ✓";
+  setTimeout(() => { status.textContent = ""; }, 1500);
+  refresh();
+});
+$("#router-test")?.addEventListener("click", async () => {
+  const status = $("#router-status");
+  status.textContent = "Testing…";
+  const r = await fetch("/api/router/test", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"}).then(r => r.json());
+  status.textContent = r.ok ? `✓ ${r.message}` : `✗ ${r.message}`;
+});
+const _prev_paintSettings_router = paintSettings;
+paintSettings = function() { _prev_paintSettings_router(); paintRouterSettings(); };
 
 // Add settings paint to the refresh chain.
 const _origPaintHook = paintHook;

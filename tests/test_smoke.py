@@ -839,6 +839,77 @@ def test_actions_alert_silent_when_voice_disabled(tmp_path, monkeypatch):
     assert spoken == []
 
 
+# ── routerctl (router quarantine adapters) ─────────────────────────────────
+
+def test_routerctl_noop_raises_helpful_error():
+    import routerctl
+    b = routerctl.NoopBackend()
+    import pytest
+    with pytest.raises(routerctl.RouterError) as ei:
+        b.block("AA:BB:CC:DD:EE:FF")
+    assert "Settings" in str(ei.value)
+    assert b.test()["ok"] is False
+
+
+def test_routerctl_get_backend_returns_noop_when_unconfigured(tmp_path):
+    import store, routerctl
+    s = store.DeviceStore(data_dir=tmp_path)
+    assert isinstance(routerctl.get_backend(s), routerctl.NoopBackend)
+
+
+def test_routerctl_get_backend_returns_unifi_when_configured(tmp_path):
+    import store, routerctl
+    s = store.DeviceStore(data_dir=tmp_path)
+    s.set_setting("router_kind", "unifi")
+    s.set_setting("router_host", "https://10.0.0.1:8443")
+    s.set_setting("router_user", "admin")
+    s.set_setting("router_pass", "x")
+    assert isinstance(routerctl.get_backend(s), routerctl.UnifiBackend)
+
+
+def test_routerctl_get_backend_returns_openwrt_when_configured(tmp_path):
+    import store, routerctl
+    s = store.DeviceStore(data_dir=tmp_path)
+    s.set_setting("router_kind", "openwrt")
+    s.set_setting("router_host", "10.0.0.1")
+    s.set_setting("router_user", "root")
+    assert isinstance(routerctl.get_backend(s), routerctl.OpenWrtBackend)
+
+
+def test_routerctl_unifi_login_failure_surfaces_clean_error(monkeypatch):
+    import routerctl, urllib.error
+    b = routerctl.UnifiBackend("https://10.0.0.1:8443", "admin", "x")
+    monkeypatch.setattr(routerctl.urllib.request, "urlopen",
+                        lambda *a, **kw: (_ for _ in ()).throw(
+                            urllib.error.URLError("connection refused")))
+    import pytest
+    with pytest.raises(routerctl.RouterError) as ei:
+        b._login()
+    assert "Couldn't reach Unifi" in str(ei.value) or "Unifi login failed" in str(ei.value)
+
+
+def test_routerctl_openwrt_ssh_failure_surfaces_clean_error(monkeypatch):
+    import routerctl
+    b = routerctl.OpenWrtBackend("10.0.0.1", "root", None)
+    monkeypatch.setattr(routerctl.subprocess, "run",
+                        lambda *a, **kw: (_ for _ in ()).throw(
+                            FileNotFoundError("ssh missing")))
+    import pytest
+    with pytest.raises(routerctl.RouterError) as ei:
+        b._ssh("echo hi")
+    assert "SSH to OpenWrt failed" in str(ei.value)
+
+
+def test_routerctl_openwrt_block_is_idempotent(monkeypatch):
+    import routerctl
+    b = routerctl.OpenWrtBackend("10.0.0.1", "root", None)
+    calls = []
+    monkeypatch.setattr(b, "_read_maclist", lambda: ["aa:bb:cc:dd:ee:ff"])
+    monkeypatch.setattr(b, "_write_maclist", lambda macs: calls.append(macs))
+    b.block("AA:BB:CC:DD:EE:FF")
+    assert calls == []   # already present, no write
+
+
 def _fake_arp_run(cmd, *a, **kw):
     """Shared subprocess.run mock for scanner ARP tests."""
     class R:

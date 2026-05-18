@@ -426,3 +426,23 @@ textarea#hook-script:focus{border-color:var(--cyan)}
   content:"✓";position:absolute;top:-3px;left:1px;color:var(--bg);font-size:13px;font-weight:600;
 }
 .settings-status{font-family:var(--mono);font-size:10px;color:var(--green);letter-spacing:.06em}
+
+.dstory-router-actions{
+  display:flex;align-items:center;gap:8px;
+  padding:10px 12px;background:var(--bg2);border:1px solid var(--border2);border-radius:6px;
+  margin-bottom:14px;
+}
+.dstory-router-status{font-family:var(--mono);font-size:10px;color:var(--text2);letter-spacing:.06em}
+
+.setting-row select{
+  background:var(--bg2);border:1px solid var(--border);color:var(--text);
+  font-family:var(--mono);font-size:12px;padding:7px 11px;border-radius:6px;outline:none;
+  min-width:180px;
+}
+.setting-row select:focus{border-color:var(--cyan)}
+.setting-row input[type="password"]{
+  flex:1;max-width:300px;
+  background:var(--bg2);border:1px solid var(--border);color:var(--text);
+  font-family:var(--mono);font-size:12px;padding:7px 11px;border-radius:6px;outline:none;
+}
+.setting-row input[type="password"]:focus{border-color:var(--cyan)}
