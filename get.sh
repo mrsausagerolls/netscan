@@ -56,8 +56,8 @@ b "→ Setting up Python environment (this may take a minute)"
 if [[ ! -d .venv ]]; then
   python3 -m venv .venv
 fi
-./.venv/bin/python -m pip install --quiet --upgrade pip
-./.venv/bin/python -m pip install --quiet -r requirements.txt
+./.venv/bin/python -m pip install --quiet --no-cache-dir --upgrade pip
+./.venv/bin/python -m pip install --quiet --no-cache-dir -r requirements.txt
 
 # ── LaunchAgent ─────────────────────────────────────────────────────────────
 
