@@ -108,6 +108,23 @@ def _copy(text: str):
     subprocess.run(["pbcopy"], input=text.encode(), check=True)
 
 
+def _local_computer_name() -> str:
+    """Return this Mac's user-set Computer Name (e.g. "Sam's MacBook Pro").
+
+    Falls back to `hostname` and finally an empty string. Never raises.
+    """
+    for cmd in (["scutil", "--get", "ComputerName"], ["hostname", "-s"]):
+        try:
+            out = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=2, check=False,
+            ).stdout.strip()
+            if out:
+                return out
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+    return ""
+
+
 class InsApp(rumps.App):
     def __init__(self):
         super().__init__(ICON, quit_button=None)
@@ -316,6 +333,14 @@ class InsApp(rumps.App):
             # Persist to store; this also stamps _is_new / _vendor_changed.
             for d in devices:
                 store.touch(d)
+                # Auto-name the local Mac on first sighting. Safe to mark Known —
+                # it's literally the host running INS. Idempotent: only fires if
+                # the user hasn't already Known-marked it (possibly with a name
+                # they prefer).
+                if d.get("me") and not store.is_known(d["mac"]):
+                    name = _local_computer_name()
+                    if name:
+                        store.add_known(d["mac"], name)
                 # Classify on every scan — cheap, and lets the type refine
                 # as ports/fingerprints come in over subsequent rescans.
                 fp_str = best_fingerprint(store.get_device(d["mac"]).get("fingerprint", {})
@@ -489,9 +514,19 @@ class InsApp(rumps.App):
             elif is_known:  icon = "🟢"
             else:           icon = "🔴"
 
-            # Label
-            name = d.get("known_name") or d.get("hostname", "")
-            if name and name != "—":
+            # Label — same name-resolution order as the dashboard:
+            # known_name > probe fingerprint > hostname > vendor > bare IP.
+            name = d.get("known_name") or ""
+            if not name:
+                rec = store.get_device(d["mac"]) or {}
+                fp = best_fingerprint(rec.get("fingerprint", {}))
+                if fp:
+                    name = fp
+            if not name:
+                hn = d.get("hostname") or ""
+                if hn and hn != "—":
+                    name = hn.rstrip(".").removesuffix(".local")
+            if name:
                 label = f"{icon}  {ip}  —  {name}"
             else:
                 vendor = d.get("vendor", "")

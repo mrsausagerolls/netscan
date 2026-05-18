@@ -248,8 +248,21 @@ function paintDevices() {
   });
 }
 
+// Pick the best human-readable name we can derive from what we know about a
+// device. Priority: explicit Known label > strongest probe fingerprint
+// (mDNS/SSDP/SMB friendlyName, HTTP page title) > reverse-DNS hostname >
+// vendor OUI lookup. Returns "" if nothing usable is available so callers
+// can choose their own fallback string ("(unnamed)", "Identifying…", etc).
+function bestName(d) {
+  if (d.known_name)                        return d.known_name;
+  if (d.fingerprint)                       return d.fingerprint;
+  if (d.hostname && d.hostname !== "—")    return d.hostname.replace(/\.local\.?$/i, "");
+  if (d.vendor && d.vendor !== "—")        return d.vendor;
+  return "";
+}
+
 function deviceCard(d) {
-  const mainName  = d.known_name || (d.hostname !== "—" ? d.hostname : d.vendor);
+  const mainName  = bestName(d);
   const subBits = [];
   if (d.ip)  subBits.push(d.ip);
   if (d.mac) subBits.push(d.mac);
@@ -340,7 +353,7 @@ function paintTriage() {
     return;
   }
   list.innerHTML = items.map(d => {
-    const suggested = d.known_name || d.hostname && d.hostname !== "—" ? d.hostname : d.vendor || "";
+    const suggested = bestName(d);
     return `
       <div class="triage-row" data-mac="${escHtml(d.mac)}">
         <div class="triage-icon">${escHtml(d.type_icon || "❔")}</div>
