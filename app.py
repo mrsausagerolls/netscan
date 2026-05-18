@@ -97,6 +97,7 @@ class WiFiScannerApp(rumps.App):
         self._last_scan: float   = 0
         self._use_fallback       = False
         self._pending: tuple | None = None  # (devices, network, ssid)
+        self._loc_item_added     = False
 
         # Static menu items
         self._status    = rumps.MenuItem("Not connected")
@@ -131,7 +132,8 @@ class WiFiScannerApp(rumps.App):
 
     def _build_menu(self):
         items = [self._status, self._scan_time, None, self._dash_item, None, self._rescan]
-        if not _location_authorized():
+        self._loc_item_added = not _location_authorized()
+        if self._loc_item_added:
             items += [None, self._loc_item]
         items += [None, self._quit]
         self.menu.clear()
@@ -144,7 +146,7 @@ class WiFiScannerApp(rumps.App):
 
     def _check_location(self, _=None):
         """Periodically remove the location warning item once permission is granted."""
-        if _location_authorized() and self._loc_item.title in self.menu:
+        if self._loc_item_added and _location_authorized():
             self._build_menu()
 
     # ── Dashboard state ───────────────────────────────────────────────────────
@@ -271,11 +273,15 @@ class WiFiScannerApp(rumps.App):
                 self._scanning = False
 
     def _bg_port_scan(self, devices: list[dict]):
+        seen = store.all_seen
         for d in devices:
             try:
                 ports = scan_ports(d["ip"])
                 store.update_ports(d["mac"], ports)
-                # Run identification probes after ports are known
+                # Skip identification probes if we already have a fingerprint —
+                # avoids mDNS/SSDP/SMB chatter on every 5 s rescan.
+                if seen.get(d["mac"], {}).get("fingerprint"):
+                    continue
                 hints = probe_device(d["ip"], d["mac"], ports)
                 if hints:
                     store.update_fingerprint(d["mac"], hints)

@@ -18,8 +18,6 @@ PROBE_PORTS = {
     8080: "HTTP-alt",
     8883: "MQTT",
     9100: "Print",
-    1900: "SSDP",
-    5353: "mDNS",
     5000: "UPnP",
     137:  "NetBIOS",
     445:  "SMB",
@@ -318,8 +316,15 @@ def enrich(devices: list[dict], local_ip: str, skip_vendor: bool = False) -> lis
         d["me"] = d["ip"] == local_ip
 
     def _resolve(d):
-        d["hostname"] = get_hostname(d["ip"])
-        d["latency"]  = ping_latency(d["ip"])
+        # gethostbyaddr has no built-in timeout; cap it so a slow upstream
+        # resolver can't stall the whole scan cycle.
+        try:
+            from concurrent.futures import ThreadPoolExecutor as _TPE
+            with _TPE(max_workers=1) as inner:
+                d["hostname"] = inner.submit(get_hostname, d["ip"]).result(timeout=1.5)
+        except Exception:
+            d["hostname"] = "—"
+        d["latency"] = ping_latency(d["ip"])
         return d
 
     with ThreadPoolExecutor(max_workers=20) as ex:
