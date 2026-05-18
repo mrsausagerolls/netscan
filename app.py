@@ -326,7 +326,8 @@ class InsApp(rumps.App):
                 self._net    = network
 
             devices, use_fallback = do_scan(
-                network, timeout=3, use_fallback=use_fallback, quiet=True
+                network, timeout=3, use_fallback=use_fallback, quiet=True,
+                iface_ip=local_ip,
             )
             devices = enrich(devices, local_ip, skip_vendor=False)
 

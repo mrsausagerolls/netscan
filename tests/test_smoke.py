@@ -733,3 +733,65 @@ def test_igd_parse_mapping_handles_missing_fields():
     import igd
     xml = b"<bogus/>"
     assert igd._parse_mapping(xml) is None
+
+
+# ── scanner: mDNS + ARP augmentation ───────────────────────────────────────
+
+def test_ip_in_network_inside_and_outside():
+    from scanner import _ip_in_network
+    assert _ip_in_network("10.0.0.5",  "10.0.0.0/24")
+    assert not _ip_in_network("10.0.1.5", "10.0.0.0/24")
+    assert not _ip_in_network("not-an-ip", "10.0.0.0/24")
+
+
+def test_arp_resolve_extracts_macs_for_requested_ips(monkeypatch):
+    import scanner
+    monkeypatch.setattr(scanner.subprocess, "run", _fake_arp_run)
+    out = scanner._arp_resolve(["10.0.0.5", "10.0.0.6", "10.0.0.99"])
+    by_ip = {r["ip"]: r["mac"] for r in out}
+    assert by_ip == {
+        "10.0.0.5": "AA:BB:CC:DD:EE:FF",
+        "10.0.0.6": "11:22:33:44:55:66",
+    }
+
+
+def test_arp_resolve_skips_incomplete_entries(monkeypatch):
+    import scanner
+
+    def fake_run(cmd, *a, **kw):
+        if cmd[:1] == ["ping"]:
+            class R: stdout = ""
+            return R()
+        if cmd[:2] == ["arp", "-an"]:
+            class R: pass
+            R.stdout = (
+                "? (10.0.0.5) at aa:bb:cc:dd:ee:ff on en0 ifscope [ethernet]\n"
+                "? (10.0.0.6) at (incomplete) on en0 ifscope [ethernet]\n"
+            )
+            return R()
+        class R: stdout = ""
+        return R()
+
+    monkeypatch.setattr(scanner.subprocess, "run", fake_run)
+    out = scanner._arp_resolve(["10.0.0.5", "10.0.0.6"])
+    assert out == [{"ip": "10.0.0.5", "mac": "AA:BB:CC:DD:EE:FF"}]
+
+
+def test_arp_resolve_empty_input_returns_empty():
+    import scanner
+    assert scanner._arp_resolve([]) == []
+
+
+def _fake_arp_run(cmd, *a, **kw):
+    """Shared subprocess.run mock for scanner ARP tests."""
+    class R:
+        stdout = ""
+    if cmd[:1] == ["ping"]:
+        return R()
+    if cmd[:2] == ["arp", "-an"]:
+        R.stdout = (
+            "? (10.0.0.5) at aa:bb:cc:dd:ee:ff on en0 ifscope [ethernet]\n"
+            "? (10.0.0.6) at 11:22:33:44:55:66 on en0 ifscope [ethernet]\n"
+        )
+        return R()
+    return R()

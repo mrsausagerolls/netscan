@@ -105,6 +105,118 @@ def arp_scan(network: str, timeout: int = 3) -> list[dict]:
     ]
 
 
+def _mdns_browse(iface_ip: str | None = None, timeout: float = 2.0) -> list[str]:
+    """Send the canonical DNS-SD service-enumeration query (PTR
+    `_services._dns-sd._udp.local`) and collect the source IPs of every
+    responder.
+
+    Catches devices that ignore ICMP / ARP probes but participate in mDNS
+    (most iPhones and iPads, AirPlay receivers, Chromecasts, smart TVs,
+    HomeKit accessories). We don't bother parsing the response payload —
+    just the fact of a reply tells us the IP is live.
+
+    Returns a sorted list of unique IPs. Safe to call without root; uses a
+    plain UDP socket. Silent on permission errors.
+    """
+    import struct
+
+    MCAST_GRP  = "224.0.0.251"
+    MCAST_PORT = 5353
+
+    # DNS wire format: PTR query for _services._dns-sd._udp.local
+    qname  = b"\x09_services\x07_dns-sd\x04_udp\x05local\x00"
+    # qtype=PTR(12), qclass=IN(1) with the "unicast response preferred" (QU)
+    # high bit set per RFC 6762 §5.4 so responders may reply directly to our
+    # ephemeral port even if we can't bind :5353.
+    qfooter = struct.pack("!HH", 12, 1 | 0x8000)
+    header  = struct.pack("!HHHHHH", 0, 0, 1, 0, 0, 0)
+    query   = header + qname + qfooter
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+    except (AttributeError, OSError):
+        pass
+
+    # Prefer binding to the mDNS port so we receive multicast replies too;
+    # if mDNSResponder won't share, fall back to an ephemeral port and rely on
+    # the QU bit. Many responders honor QU; missing the rest is acceptable.
+    try:
+        sock.bind(("", MCAST_PORT))
+        mreq = struct.pack("4s4s", socket.inet_aton(MCAST_GRP),
+                           socket.inet_aton(iface_ip or "0.0.0.0"))
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+    except OSError:
+        try:
+            sock.bind(("", 0))
+        except OSError:
+            sock.close()
+            return []
+
+    if iface_ip:
+        try:
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF,
+                            socket.inet_aton(iface_ip))
+        except OSError:
+            pass
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+    sock.settimeout(0.4)
+
+    seen: set[str] = set()
+    try:
+        sock.sendto(query, (MCAST_GRP, MCAST_PORT))
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                _, addr = sock.recvfrom(4096)
+                seen.add(addr[0])
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+    except OSError:
+        pass
+    finally:
+        sock.close()
+
+    return sorted(seen)
+
+
+def _arp_resolve(ips: list[str]) -> list[dict]:
+    """Ping a list of IPs once to populate the kernel ARP cache, then read
+    `arp -a` to extract their MACs. Returns only IPs that ARP-resolved.
+
+    Designed for the mDNS-discovered-but-not-yet-seen path: we already know
+    the IPs are alive (they answered mDNS), but we still need MACs to fit
+    them into INS's device model.
+    """
+    if not ips:
+        return []
+
+    def ping(ip: str):
+        subprocess.run(
+            ["ping", "-c", "1", "-W", "500", ip],
+            capture_output=True, check=False,
+        )
+
+    with ThreadPoolExecutor(max_workers=min(20, len(ips))) as ex:
+        list(ex.map(ping, ips))
+
+    arp_out = subprocess.run(["arp", "-an"], capture_output=True, text=True).stdout
+
+    by_ip: dict[str, str] = {}
+    for line in arp_out.splitlines():
+        m = re.search(r"\((\d+\.\d+\.\d+\.\d+)\) at ([0-9a-f:]+)", line)
+        if not m or "incomplete" in line:
+            continue
+        ip, mac = m.group(1), _normalize_mac(m.group(2))
+        if ip in ips and _is_unicast(ip, mac):
+            by_ip[ip] = mac
+
+    return [{"ip": ip, "mac": mac} for ip, mac in by_ip.items()]
+
+
 def fallback_scan(network: str, quiet: bool = False) -> list[dict]:
     if not quiet:
         console.print("[yellow]No root — falling back to ping sweep (slower)…[/yellow]\n")
@@ -401,18 +513,52 @@ def build_table(
 
 
 def do_scan(
-    network: str, timeout: int, use_fallback: bool, quiet: bool = False
+    network: str, timeout: int, use_fallback: bool, quiet: bool = False,
+    iface_ip: str | None = None,
 ) -> tuple[list[dict], bool]:
-    """Run one scan cycle. Returns (devices, use_fallback)."""
+    """Run one scan cycle. Returns (devices, use_fallback).
+
+    Layered discovery:
+      1. ARP scan if we have raw-socket privileges, else ICMP ping sweep.
+      2. mDNS service-enumeration sweep that catches devices ignoring ARP/ICMP
+         (most modern iPhones, AirPlay receivers, Chromecasts). New IPs are
+         ARP-resolved and merged into the device list. mDNS failures are
+         non-fatal — the ARP/ping result still ships.
+    """
     if use_fallback:
-        return fallback_scan(network, quiet=quiet), True
+        devices, used_fb = fallback_scan(network, quiet=quiet), True
+    else:
+        try:
+            devices, used_fb = arp_scan(network, timeout), False
+        except Exception as e:
+            if "permission" in str(e).lower() or "root" in str(e).lower():
+                devices, used_fb = fallback_scan(network, quiet=quiet), True
+            else:
+                console.print(f"[red]Scan error: {e}[/red]")
+                sys.exit(1)
+
     try:
-        return arp_scan(network, timeout), False
-    except Exception as e:
-        if "permission" in str(e).lower() or "root" in str(e).lower():
-            return fallback_scan(network, quiet=quiet), True
-        console.print(f"[red]Scan error: {e}[/red]")
-        sys.exit(1)
+        known_ips  = {d["ip"] for d in devices}
+        mdns_ips   = [ip for ip in _mdns_browse(iface_ip=iface_ip)
+                      if ip not in known_ips and _ip_in_network(ip, network)]
+        if mdns_ips:
+            for extra in _arp_resolve(mdns_ips):
+                if extra["ip"] not in known_ips:
+                    devices.append(extra)
+                    known_ips.add(extra["ip"])
+    except Exception:
+        pass
+
+    return devices, used_fb
+
+
+def _ip_in_network(ip: str, network: str) -> bool:
+    """True if `ip` falls inside the CIDR `network`. Cheap; no exception leaks."""
+    try:
+        from ipaddress import IPv4Address, IPv4Network
+        return IPv4Address(ip) in IPv4Network(network)
+    except Exception:
+        return False
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
