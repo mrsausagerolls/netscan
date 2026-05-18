@@ -84,10 +84,37 @@ or block them in a single sitting — first-launch, after a party, after the
 router rebooted. Bulk-mark, individual rename, "don't probe this device"
 toggle for fragile IoT.
 
+## Launchers
+
+Three ways to open INS, all installed automatically by `get.sh` /
+`install.sh`:
+
+- **Menubar** (📡) — already running after install; the auto-start LaunchAgent
+  keeps it there across logins.
+- **`/Applications/Inglorious Network Scanner.app`** — a small clickable
+  launcher. Double-click from Finder or pin it to the Dock; it loads the
+  LaunchAgent if INS isn't running, waits for the dashboard to come up,
+  and opens it in your default browser. Unsigned, so Gatekeeper warns on
+  first launch — right-click → Open.
+- **`ins` CLI** (symlinked into `~/.local/bin`):
+
+  | Command | Does |
+  |---|---|
+  | `ins`            | Open the dashboard (starts INS if needed) |
+  | `ins start`      | Load the LaunchAgent |
+  | `ins stop`       | Unload the LaunchAgent |
+  | `ins restart`    | Kickstart |
+  | `ins status`     | Show running state + dashboard reachability |
+  | `ins logs`       | Tail `/tmp/ins.log` |
+  | `ins update`     | Run `update.sh` |
+  | `ins version`    | Print installed version |
+
+  Add `~/.local/bin` to your PATH if it isn't already.
+
 ## Dashboard
 
-Open from the menubar (`Open Dashboard ↗ localhost:8765`) or directly at
-`http://localhost:8765`.
+Open from the menubar (`Open Dashboard ↗ localhost:8765`), the Applications
+launcher, the `ins` CLI, or directly at `http://localhost:8765`.
 
 Tabs: **Overview** (health score + recent alerts), **Devices**, **Triage**,
 **Security** (full alert history), **History** (population over time), and

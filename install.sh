@@ -38,3 +38,28 @@ launchctl load "$PLIST_DST"
 
 echo "installed: $PLIST_DST"
 echo "logs:      /tmp/ins.log  /tmp/ins.err"
+
+LAUNCHER_SRC="$PROJ/launcher/Inglorious Network Scanner.app"
+LAUNCHER_DST="/Applications/Inglorious Network Scanner.app"
+if [[ -d "$LAUNCHER_SRC" ]]; then
+    if [[ -w "/Applications" ]]; then
+        rm -rf "$LAUNCHER_DST"
+        cp -R "$LAUNCHER_SRC" "$LAUNCHER_DST"
+        echo "launcher: $LAUNCHER_DST  (double-click to open the dashboard)"
+    else
+        echo "launcher: /Applications isn't writable; drag '$LAUNCHER_SRC' there yourself."
+    fi
+fi
+
+CLI_SRC="$PROJ/tools/ins"
+CLI_LOCAL_BIN="$HOME/.local/bin"
+CLI_LINK="$CLI_LOCAL_BIN/ins"
+if [[ -x "$CLI_SRC" ]]; then
+    mkdir -p "$CLI_LOCAL_BIN"
+    ln -sf "$CLI_SRC" "$CLI_LINK"
+    echo "cli:       $CLI_LINK -> $CLI_SRC"
+    case ":$PATH:" in
+        *":$CLI_LOCAL_BIN:"*) ;;
+        *) echo "           (add $CLI_LOCAL_BIN to your PATH to use 'ins' as a command)";;
+    esac
+fi

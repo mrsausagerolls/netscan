@@ -1,0 +1,41 @@
+#!/bin/bash
+# Inglorious Network Scanner — clickable launcher.
+#
+# Double-clicked from /Applications or Dock. Three responsibilities:
+#   1. If INS isn't installed, point the user at the install one-liner.
+#   2. If the launchd agent isn't loaded, load it.
+#   3. Wait briefly for the dashboard to be reachable, then open it in the
+#      default browser.
+#
+# Kept dependency-light: pure bash + osascript for the "not installed" prompt.
+# No assumptions about which terminal or shell the user has.
+
+set -u
+
+LABEL="co.ingloriouslabs.netscan"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+DASH_URL="http://localhost:8765/"
+
+if [[ ! -f "$PLIST" ]]; then
+    osascript <<'APPLESCRIPT'
+display dialog "Inglorious Network Scanner isn't installed yet.
+
+Install it with this one command in Terminal:
+
+curl -fsSL https://raw.githubusercontent.com/mrsausagerolls/netscan/main/get.sh | bash" buttons {"OK"} default button "OK" with title "INS not installed" with icon caution
+APPLESCRIPT
+    exit 0
+fi
+
+if ! launchctl list 2>/dev/null | grep -q "$LABEL"; then
+    launchctl load "$PLIST" 2>/dev/null || true
+fi
+
+for _ in $(seq 1 20); do
+    if curl -s -m 1 --connect-timeout 1 -o /dev/null "$DASH_URL"; then
+        break
+    fi
+    sleep 0.5
+done
+
+open "$DASH_URL"

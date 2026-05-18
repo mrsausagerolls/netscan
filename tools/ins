@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# Inglorious Network Scanner — command-line launcher.
+#
+# Usage:
+#   ins                Open the dashboard in your browser (start INS if needed)
+#   ins start          Load the LaunchAgent
+#   ins stop           Unload the LaunchAgent
+#   ins restart        Kickstart the LaunchAgent
+#   ins status         Show whether INS is running + dashboard reachable
+#   ins logs           Tail /tmp/ins.log
+#   ins errlogs        Tail /tmp/ins.err
+#   ins update         Run the in-place updater (git pull + restart)
+#   ins dir            Print the install directory
+#   ins version        Print the installed version
+
+set -u
+
+LABEL="co.ingloriouslabs.netscan"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+DASH_URL="http://localhost:8765/"
+
+INSTALL_DIR=""
+for candidate in "$HOME/.ins" "$HOME/.netscan"; do
+    if [[ -d "$candidate/.git" ]]; then
+        INSTALL_DIR="$candidate"
+        break
+    fi
+done
+
+err()  { printf "\033[31merror:\033[0m %s\n" "$*" >&2; }
+ok()   { printf "\033[32m✓\033[0m %s\n" "$*"; }
+warn() { printf "\033[33m!\033[0m %s\n" "$*"; }
+
+ensure_installed() {
+    if [[ ! -f "$PLIST" ]]; then
+        err "INS LaunchAgent not found at $PLIST"
+        echo "  Install: curl -fsSL https://raw.githubusercontent.com/mrsausagerolls/netscan/main/get.sh | bash"
+        exit 1
+    fi
+}
+
+cmd_start() {
+    ensure_installed
+    launchctl load "$PLIST" 2>/dev/null && ok "Loaded $LABEL" || warn "Already loaded or load failed"
+}
+
+cmd_stop() {
+    ensure_installed
+    launchctl unload "$PLIST" 2>/dev/null && ok "Unloaded $LABEL" || warn "Already unloaded"
+}
+
+cmd_restart() {
+    ensure_installed
+    local uid; uid="$(id -u)"
+    if launchctl kickstart -k "gui/$uid/$LABEL" 2>/dev/null; then
+        ok "Kickstarted $LABEL"
+    else
+        launchctl unload "$PLIST" 2>/dev/null || true
+        launchctl load   "$PLIST" 2>/dev/null && ok "Reloaded $LABEL"
+    fi
+}
+
+cmd_status() {
+    if launchctl list 2>/dev/null | grep -q "$LABEL"; then
+        local pid; pid="$(launchctl list | awk -v l="$LABEL" '$3==l{print $1}')"
+        ok "Running (pid $pid)"
+    else
+        warn "Not running"
+    fi
+    if curl -s -m 2 --connect-timeout 2 -o /dev/null "$DASH_URL"; then
+        ok "Dashboard reachable at $DASH_URL"
+    else
+        warn "Dashboard not reachable"
+    fi
+    if [[ -n "$INSTALL_DIR" ]]; then
+        printf "  Install dir: %s\n" "$INSTALL_DIR"
+    fi
+}
+
+cmd_logs()    { ensure_installed; exec tail -n 100 -f /tmp/ins.log; }
+cmd_errlogs() { ensure_installed; exec tail -n 100 -f /tmp/ins.err; }
+
+cmd_update() {
+    if [[ -z "$INSTALL_DIR" ]]; then
+        err "Couldn't find INS install directory (looked in ~/.ins and ~/.netscan)"
+        exit 1
+    fi
+    exec "$INSTALL_DIR/update.sh"
+}
+
+cmd_dir() {
+    if [[ -n "$INSTALL_DIR" ]]; then echo "$INSTALL_DIR"; else err "not installed"; exit 1; fi
+}
+
+cmd_version() {
+    if [[ -n "$INSTALL_DIR" && -f "$INSTALL_DIR/version.py" ]]; then
+        grep -m1 -E '^__version__' "$INSTALL_DIR/version.py" | sed -E 's/.*"([^"]+)".*/\1/'
+    else
+        err "not installed"; exit 1
+    fi
+}
+
+cmd_open() {
+    ensure_installed
+    if ! launchctl list 2>/dev/null | grep -q "$LABEL"; then
+        launchctl load "$PLIST" 2>/dev/null || true
+    fi
+    for _ in $(seq 1 20); do
+        if curl -s -m 1 --connect-timeout 1 -o /dev/null "$DASH_URL"; then break; fi
+        sleep 0.5
+    done
+    open "$DASH_URL"
+}
+
+case "${1:-open}" in
+    ""|open|dashboard) cmd_open ;;
+    start)             cmd_start ;;
+    stop)              cmd_stop ;;
+    restart)           cmd_restart ;;
+    status)            cmd_status ;;
+    logs|log)          cmd_logs ;;
+    errlogs|errlog)    cmd_errlogs ;;
+    update|upgrade)    cmd_update ;;
+    dir|where)         cmd_dir ;;
+    version|--version|-v) cmd_version ;;
+    help|--help|-h)
+        sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
+        ;;
+    *)
+        err "unknown command: $1"
+        echo "Run 'ins help' for usage."
+        exit 1
+        ;;
+esac

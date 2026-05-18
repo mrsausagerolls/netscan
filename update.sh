@@ -29,6 +29,20 @@ cd "$PROJ"
     fi
   fi
 
+  # Refresh the clickable launcher in /Applications and the CLI symlink so
+  # in-app updates don't lag behind get.sh installs. Idempotent.
+  LAUNCHER_SRC="$PROJ/launcher/Inglorious Network Scanner.app"
+  LAUNCHER_DST="/Applications/Inglorious Network Scanner.app"
+  if [[ -d "$LAUNCHER_SRC" && -w "/Applications" ]]; then
+    rm -rf "$LAUNCHER_DST"
+    cp -R "$LAUNCHER_SRC" "$LAUNCHER_DST" && echo "launcher refreshed: $LAUNCHER_DST"
+  fi
+  CLI_SRC="$PROJ/tools/ins"
+  if [[ -x "$CLI_SRC" ]]; then
+    mkdir -p "$HOME/.local/bin"
+    ln -sf "$CLI_SRC" "$HOME/.local/bin/ins" && echo "cli refreshed: $HOME/.local/bin/ins"
+  fi
+
   # Restart via launchd. kickstart -k stops and restarts the job atomically.
   if [[ -f "$PLIST" ]]; then
     uid="$(id -u)"
