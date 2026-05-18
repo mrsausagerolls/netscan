@@ -14,7 +14,13 @@ One command. Clones to `~/.netscan`, sets up a Python venv, installs deps, and r
 
 Requires macOS 13+, Python 3.11+, and git (`xcode-select --install` if missing).
 
-Environment overrides:
+Environment overrides (env vars must be on the **bash** side of the pipe — they're consumed by the installer, not by curl):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mrsausagerolls/netscan/main/get.sh \
+  | NETSCAN_DIR=/custom/path NETSCAN_NO_AUTOSTART=1 bash
+```
+
 - `NETSCAN_DIR=/custom/path` — install somewhere other than `~/.netscan`
 - `NETSCAN_NO_AUTOSTART=1` — skip the LaunchAgent (run manually instead)
 
