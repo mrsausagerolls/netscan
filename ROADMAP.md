@@ -24,54 +24,72 @@ The principles INS optimizes for, in order:
 - Per-day alert deduplication, severity-filtered webhook routing.
 - LaunchAgent install path + in-app updater against GitHub Releases.
 
-## In progress — v2.1
+## Shipped — v2.1
 
-- **Network Health Score** (0–100) with one-line reasons.
-- **Triage queue** UI for batch-acknowledging unknown devices.
-- **New detection rules**:
-  - Rogue DHCP server detector
-  - ARP-spoof / MAC-flap detector
-  - WAN-exposed port check via UPnP IGD enumeration
-  - DNS threat-intel match (local DB, no upload)
-  - MAC-randomization recognition (deduplicate "same iPhone, different MAC"
-    alerts via fingerprint similarity).
-- **Per-device probe opt-out** — never touch devices the user has marked
-  fragile (printers, legacy IoT).
-- **Notification burst-coalescing** — five new devices → one banner.
+- **Network Health Score** (0–100) with weighted reasons.
+- **Triage queue** UI to batch-name or batch-block unknown devices.
+- **mDNS browse discovery** so ARP-silent devices (iPhones, AirPlay, Chromecast)
+  appear in the device list.
+- **Auto-name local Mac** via `scutil --get ComputerName`; **fingerprint as
+  headline name** for printers/cameras/TVs that advertise a friendlyName.
+- **Server-Sent Events** for instant dashboard updates instead of 3 s polling
+  (30 s fallback if SSE drops).
+- **Per-device story drawer** — sightings, port history, alerts triggered,
+  WAN exposure, identity. Click any device card to open.
+- **First-launch onboarding tour** — 3-step Welcome / Health Score / Triage
+  walkthrough, marked done in store so it doesn't reappear.
+- **Voice alert announcements** (opt-in) via `say` for warning + critical.
+- **Apple Shortcuts triggers** — run a named Shortcut on new-device or alert
+  events. The shortcut receives the payload as JSON on stdin.
+- **New detection rules**: rogue DHCP, ARP-spoof, WAN-exposed port via UPnP
+  IGD, DNS threat-intel local match, MAC-randomization clustering.
+- **Per-device probe opt-out** for fragile IoT/printers.
+- **Notification burst-coalescing** (5 new joins → 1 banner).
 - **Pushover** + **ntfy** webhook dispatchers alongside Discord/Slack.
-- **SECURITY.md** and this roadmap.
 
 ## Next — v2.2 (not started)
 
 - **Signed + notarized .app + DMG.** The single biggest trust win. Once we
   have an Apple Developer ID, the curl-installer becomes optional rather
   than the recommended path. Also fixes the macOS notification attribution
-  (currently appears as "Script Editor" — see [notify.py](notify.py)).
+  (currently appears as "Script Editor").
 - **Homebrew cask** — `brew install --cask inglorious-network-scanner`.
-- **Onboarding tour** — first-launch walkthrough that classifies "you",
-  the router, and the obvious household devices, then hands the user a
-  triage queue for the rest.
-- **Inline alert help drawer** — per-alert "what does this mean / what
-  should I do" explainer pages, reachable from every alert.
-- **Apple Shortcuts actions** — "Run shortcut when new device joins" etc.
-- **iOS companion app (LAN-only)** — read-only push notifications and
-  triage from the phone, talking to the local INS over Bonjour.
+- **Router-API block / quarantine** — when the user clicks "Block" on a
+  device, INS calls the router's API to kick it off the WiFi. Per-vendor
+  modules; first targets:
+  - **Unifi (UDM-Pro / Dream Machine / Cloud Key)** via the official REST
+    API. Needs admin creds in Settings; tested with a real device before
+    shipping.
+  - **OpenWrt** via SSH + `uci set wireless.@wifi-iface[0].macfilter='deny'`.
+  - **Eero** via the unofficial Cognito-auth API (carries breakage risk).
+- **Schedule profiles** — "Out of town" auto-alerts on any new device; "Kids'
+  bedtime" silences non-critical alerts for a window. Cron-style scheduler
+  + scoped rule activation.
+- **Per-network memory** — when you move between home / office / café, INS
+  keeps device lists separated per SSID rather than mixing them.
 
 ## Exploration — v3.0
 
-- **Passive traffic-pattern anomalies.** Per-device byte/connection
-  baselines from libpcap on the WiFi interface; flag IoT that suddenly
-  uploads at 3 a.m. Requires significant rework of the scanner thread
-  model — see the worker-pool note below.
+- **Bandwidth + connection map per device** via passive pcap on the WiFi
+  interface. Needs root (current launchd registration runs as the user),
+  pulls per-device byte counts + remote IPs over rolling windows, surfaces
+  "your smart TV phones home to Korea" insights. Significant scanner thread
+  rework.
+- **DNS query logging + threat-intel correlation.** Opt-in; needs root pcap
+  or a local resolver shim. Vastly more powerful than the v2.0 local-list
+  match because we'd see *every* lookup, not just ones that happen to be on
+  a known-bad domain. Privacy-sensitive — has to be opt-in and locally-only.
+- **iOS companion app (LAN-only).** Native Swift app that discovers the
+  local INS via Bonjour and surfaces alerts + triage on your phone. No
+  cloud round-trip. Realistic scope: a few weekends of native iOS work
+  plus Apple Developer + App Store submission.
 - **Local-LLM "Name this device"** — feed vendor + ports + fingerprint to
-  a small local model (Ollama if installed, falls back to rules) and
-  propose a friendly name. Strictly on-device.
+  a small local model (Ollama if installed) and propose a friendly name.
+  Strictly on-device.
 - **Community fingerprint database (opt-in).** Anonymous
-  `fingerprint_hash → label` submissions, no PII. Same model as the MAC
-  vendor OUI database.
-- **Linux port.** scapy is cross-platform; the blocker is `rumps` (macOS
-  menubar). Likely path: factor out a headless engine + dashboard, run as
-  a systemd service on Linux.
+  `fingerprint_hash → label` submissions, no PII.
+- **Linux port** — factor a headless engine + dashboard out of the macOS
+  menubar wrapper so INS can run as a systemd service.
 - **Home Assistant MQTT publisher** for prosumer integration.
 
 ## Architectural debt

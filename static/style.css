@@ -344,3 +344,85 @@ textarea#hook-script:focus{border-color:var(--cyan)}
 .page-footer .dot-sep{color:var(--border2)}
 .page-footer a{color:var(--text2);text-decoration:none;transition:color .12s ease}
 .page-footer a:hover{color:var(--cyan)}
+
+/* ── DEVICE STORY DRAWER ────────────────────────────────────────────────── */
+.drawer-wide{width:min(560px, 96vw)}
+.device-card{cursor:pointer}
+.device-card .dc-actions .btn{cursor:pointer}
+
+.dstory-meta{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;font-size:12px;margin-bottom:14px}
+.dstory-meta dt{color:var(--text3);font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;align-self:center}
+.dstory-meta dd{color:var(--text);font-family:var(--mono);font-size:11.5px;word-break:break-all}
+
+.dstory-wan{
+  background:var(--red-a);border:1px solid rgba(240,67,90,.3);
+  color:var(--red);font-size:12px;padding:8px 12px;border-radius:6px;
+  margin:10px 0;font-family:var(--mono);
+}
+.dstory-list{display:flex;flex-direction:column;gap:4px;margin-bottom:8px}
+.dstory-row{
+  display:grid;grid-template-columns:1fr auto auto;gap:12px;
+  padding:6px 10px;background:var(--bg2);border:1px solid var(--border);border-radius:5px;
+  font-family:var(--mono);font-size:10.5px;
+}
+.dstory-ts{color:var(--text2)}
+.dstory-ip{color:var(--cyan)}
+.dstory-lat{color:var(--text3)}
+
+.dstory-alert{
+  padding:10px 12px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;
+  display:flex;flex-direction:column;gap:4px;
+}
+.dstory-alert.sev-critical{border-color:rgba(240,67,90,.4);background:linear-gradient(180deg, var(--red-a) 0%, var(--bg2) 80%)}
+.dstory-alert.sev-warning{border-color:rgba(245,166,35,.35)}
+.dstory-alert-head{font-size:12px;color:var(--text)}
+.dstory-alert-msg{font-size:11px;color:var(--text2);line-height:1.55}
+.dstory-alert-ts{font-family:var(--mono);font-size:10px;color:var(--text3)}
+
+.empty-inline{color:var(--text3);font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase}
+
+/* ── ONBOARDING ─────────────────────────────────────────────────────────── */
+.onboarding{
+  position:fixed;inset:0;z-index:50;
+  background:rgba(7,9,13,.78);backdrop-filter:blur(6px);
+  display:flex;align-items:center;justify-content:center;
+  animation:fadeIn .25s ease;
+}
+.onboarding[hidden]{display:none}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.onboarding-card{
+  background:var(--bg1);border:1px solid var(--border2);border-radius:14px;
+  padding:32px 36px;max-width:520px;width:92%;
+  box-shadow:0 20px 60px rgba(0,0,0,.55), 0 0 1px rgba(0,217,245,.15) inset;
+}
+.onboarding-step h2{
+  font-family:var(--mono);font-size:14px;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--cyan);margin-bottom:14px;
+}
+.onboarding-step p{font-size:14px;color:var(--text);line-height:1.65;margin-bottom:24px}
+.onboarding-actions{display:flex;justify-content:flex-end;gap:8px;margin-bottom:18px}
+.onboarding-pips{display:flex;justify-content:center;gap:6px}
+.pip{width:6px;height:6px;border-radius:50%;background:var(--border2);transition:background .15s ease}
+.pip.active{background:var(--cyan);box-shadow:0 0 6px rgba(0,217,245,.55)}
+
+/* ── SETTING ROWS (voice/shortcuts) ─────────────────────────────────────── */
+.setting-row{
+  display:flex;align-items:center;gap:12px;
+  padding:10px 0;font-size:13px;color:var(--text);
+}
+.setting-row label{color:var(--text2);font-family:var(--mono);font-size:11px;letter-spacing:.04em;min-width:170px}
+.setting-row input[type="text"]{
+  flex:1;max-width:300px;
+  background:var(--bg2);border:1px solid var(--border);color:var(--text);
+  font-family:var(--mono);font-size:12px;padding:7px 11px;border-radius:6px;outline:none;
+}
+.setting-row input[type="text"]:focus{border-color:var(--cyan)}
+.setting-row input[type="checkbox"]{
+  appearance:none;width:14px;height:14px;border:1px solid var(--border2);border-radius:3px;
+  background:var(--bg2);cursor:pointer;position:relative;flex-shrink:0;
+}
+.setting-row input[type="checkbox"]:checked{background:var(--cyan);border-color:var(--cyan)}
+.setting-row input[type="checkbox"]:checked::after{
+  content:"✓";position:absolute;top:-3px;left:1px;color:var(--bg);font-size:13px;font-weight:600;
+}
+.settings-status{font-family:var(--mono);font-size:10px;color:var(--green);letter-spacing:.06em}

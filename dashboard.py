@@ -11,12 +11,15 @@ Architecture:
 import json
 import mimetypes
 import os
+import queue
 import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
+
+import events
 
 PORT = 8765
 
@@ -38,6 +41,45 @@ def _read_static(rel_path: str) -> bytes | None:
 
 def _ctype(path: str) -> str:
     return mimetypes.guess_type(path)[0] or "application/octet-stream"
+
+
+# ── SSE broadcaster ──────────────────────────────────────────────────────────
+#
+# Each connected /api/stream client gets a thread-safe Queue. The event bus
+# publishes into every queue; the per-connection handler thread drains its
+# queue and writes SSE frames to its client. Dead clients are detected on
+# write and dropped.
+
+_sse_clients: list[queue.Queue] = []
+_sse_lock    = threading.Lock()
+
+
+def _sse_publish(event_name: str, payload: dict) -> None:
+    """Fan an event out to every connected SSE client. Drops nothing — slow
+    clients have a small bounded buffer; if their queue is full, the new event
+    is silently discarded for them (their next /api/state poll will catch up)."""
+    frame = (event_name, payload)
+    with _sse_lock:
+        for q in list(_sse_clients):
+            try:
+                q.put_nowait(frame)
+            except queue.Full:
+                pass
+
+
+def _wire_event_bus_once():
+    """Subscribe the SSE broadcaster to the event bus. Idempotent."""
+    global _bus_wired
+    if _bus_wired:
+        return
+    _bus_wired = True
+    for evt in (events.SCAN_COMPLETED, events.ALERT_RAISED,
+                events.DEVICE_JOINED, events.DEVICE_LEFT,
+                events.PORTS_CHANGED, events.VENDOR_CHANGED):
+        events.subscribe(evt, lambda payload, e=evt: _sse_publish(e, payload))
+
+
+_bus_wired = False
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -78,6 +120,12 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/wan_mappings":
             self._send(200, "application/json",
                        json.dumps(self.store.wan_mappings()).encode())
+            return
+        if path.startswith("/api/device/"):
+            self._send_device_story(path[len("/api/device/"):])
+            return
+        if path == "/api/stream":
+            self._serve_sse()
             return
         if path == "/favicon.ico":
             self._send(204, "image/x-icon", b"")
@@ -180,8 +228,80 @@ class _Handler(BaseHTTPRequestHandler):
                 self.on_known_change()
             self._ok()
             return
+        if path == "/api/settings/save":
+            allowed = {
+                "voice_enabled", "shortcut_on_new_device",
+                "shortcut_on_alert", "first_run_done",
+            }
+            for key, val in (body or {}).items():
+                if key in allowed:
+                    self.store.set_setting(key, str(val))
+            self._ok()
+            return
 
         self._send(404, "application/json", b'{"error":"not found"}')
+
+    # ── /api/device/<mac> — per-device story ─────────────────────────────
+
+    def _send_device_story(self, mac: str):
+        mac = (mac or "").upper().replace("-", ":")
+        device = self.store.get_device(mac)
+        if not device:
+            self._send(404, "application/json", b'{"error":"unknown mac"}')
+            return
+        sightings = self.store._q(
+            "SELECT ip, ts, latency_ms FROM sightings WHERE mac=? "
+            "ORDER BY ts DESC LIMIT 200", (mac,),
+        )
+        alerts = self.store._q(
+            "SELECT id, ts, kind, severity, title, message, acknowledged "
+            "FROM alerts WHERE mac=? ORDER BY ts DESC LIMIT 100", (mac,),
+        )
+        story = {
+            "device":    device,
+            "is_known":  self.store.is_known(mac),
+            "known_name": self.store.known_name(mac),
+            "wan_exposed": self.store.wan_mappings_for(device.get("ip") or ""),
+            "sightings": [dict(r) for r in sightings],
+            "alerts":    [dict(r) for r in alerts],
+        }
+        self._send(200, "application/json", json.dumps(story).encode())
+
+    # ── /api/stream — Server-Sent Events ─────────────────────────────────
+
+    def _serve_sse(self):
+        """Long-lived SSE connection. Streams events from the bus + heartbeats
+        every 15s so reverse-proxies and the browser keep the socket open."""
+        self.send_response(200)
+        self.send_header("Content-Type",  "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection",    "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+
+        q: queue.Queue = queue.Queue(maxsize=64)
+        with _sse_lock:
+            _sse_clients.append(q)
+
+        try:
+            self.wfile.write(b": connected\n\n")
+            self.wfile.flush()
+            while True:
+                try:
+                    event_name, payload = q.get(timeout=15)
+                    msg = (f"event: {event_name}\n"
+                           f"data: {json.dumps(payload, default=str)}\n\n")
+                    self.wfile.write(msg.encode())
+                    self.wfile.flush()
+                except queue.Empty:
+                    self.wfile.write(b": keep-alive\n\n")
+                    self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            with _sse_lock:
+                if q in _sse_clients:
+                    _sse_clients.remove(q)
 
     # ── helpers ───────────────────────────────────────────────────────────
 
@@ -200,9 +320,16 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 class _Server(HTTPServer):
-    """HTTPServer with SO_REUSEPORT so a restarted process can bind immediately."""
+    """HTTPServer with SO_REUSEPORT + threaded so SSE connections don't block
+    the regular request path."""
     allow_reuse_address = True
     allow_reuse_port    = True
+
+
+from socketserver import ThreadingMixIn
+
+class _ThreadedServer(ThreadingMixIn, _Server):
+    daemon_threads = True
 
 
 def start(store, get_state, on_known_change=None, port: int = PORT):
@@ -214,12 +341,12 @@ def start(store, get_state, on_known_change=None, port: int = PORT):
         f"http://localhost:{port}",
     }
 
-    # Retry binding for up to 15 s in case the previous instance's socket is
-    # still in TIME_WAIT after a rapid launchd restart.
+    _wire_event_bus_once()
+
     deadline = time.monotonic() + 15
     while True:
         try:
-            server = _Server(("127.0.0.1", port), _Handler)
+            server = _ThreadedServer(("127.0.0.1", port), _Handler)
             break
         except OSError:
             if time.monotonic() > deadline:

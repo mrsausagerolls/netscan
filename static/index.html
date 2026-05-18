@@ -185,6 +185,31 @@
       <button id="hook-save" class="btn">Save hook</button>
     </div>
 
+    <div class="pbar"><h2>Voice &amp; Apple Shortcuts</h2></div>
+    <div class="section">
+      <p class="help">
+        Speak warning/critical alerts out loud, or trigger an Apple Shortcut on
+        every alert or new device. First Shortcuts invocation prompts macOS for
+        Automation permission — allow it once for INS.
+      </p>
+      <label class="setting-row">
+        <input type="checkbox" id="setting-voice">
+        <span>Speak warning &amp; critical alerts aloud (<code>say</code>)</span>
+      </label>
+      <div class="setting-row">
+        <label for="setting-shortcut-alert">Shortcut on every alert:</label>
+        <input type="text" id="setting-shortcut-alert" placeholder="Shortcut name">
+      </div>
+      <div class="setting-row">
+        <label for="setting-shortcut-new">Shortcut on new device:</label>
+        <input type="text" id="setting-shortcut-new" placeholder="Shortcut name">
+      </div>
+      <div class="setting-row">
+        <button id="settings-save" class="btn btn-primary">Save</button>
+        <span class="settings-status" id="settings-status"></span>
+      </div>
+    </div>
+
     <div class="pbar"><h2>Privacy</h2></div>
     <div class="section privacy-block">
       <p>
@@ -203,6 +228,27 @@
     </div>
   </section>
 </main>
+
+<!-- Slide-over for per-device "story" view. -->
+<aside class="drawer drawer-wide" id="device-drawer" hidden>
+  <div class="drawer-head">
+    <div class="drawer-title" id="device-drawer-title">Device</div>
+    <button class="btn btn-ghost" id="device-drawer-close">Close</button>
+  </div>
+  <div class="drawer-body" id="device-drawer-body"></div>
+</aside>
+
+<!-- First-launch onboarding overlay -->
+<div class="onboarding" id="onboarding" hidden>
+  <div class="onboarding-card">
+    <div class="onboarding-step" id="onboarding-step"></div>
+    <div class="onboarding-actions">
+      <button class="btn btn-ghost" id="onboarding-skip">Skip</button>
+      <button class="btn btn-primary" id="onboarding-next">Next</button>
+    </div>
+    <div class="onboarding-pips" id="onboarding-pips"></div>
+  </div>
+</div>
 
 <!-- Slide-over for "what does this mean" alert help. -->
 <aside class="drawer" id="alert-drawer" hidden>

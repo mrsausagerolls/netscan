@@ -782,6 +782,63 @@ def test_arp_resolve_empty_input_returns_empty():
     assert scanner._arp_resolve([]) == []
 
 
+# ── actions (voice + Shortcuts) ────────────────────────────────────────────
+
+def test_actions_wire_is_idempotent(tmp_path):
+    import store, actions, events
+    s = store.DeviceStore(data_dir=tmp_path)
+    actions._wired = False  # reset for isolated test
+    actions.wire(s)
+    actions.wire(s)
+    actions.wire(s)
+    assert actions._wired is True
+
+
+def test_actions_speak_uses_say(monkeypatch):
+    import actions
+    captured = []
+    class P:
+        def __init__(self, cmd, **kw):
+            captured.append(cmd)
+        def communicate(self, *a, **kw): return (b"", b"")
+    monkeypatch.setattr(actions.subprocess, "Popen", P)
+    actions._speak("Network alert")
+    assert captured and captured[0][0] == "say"
+    assert "Network alert" in captured[0]
+
+
+def test_actions_run_shortcut_no_op_on_empty_name(monkeypatch):
+    import actions
+    called = []
+    monkeypatch.setattr(actions.subprocess, "Popen",
+                        lambda *a, **kw: called.append(a) or None)
+    actions._run_shortcut("", {"title": "x"})
+    actions._run_shortcut("   ", {"title": "x"})
+    assert called == []
+
+
+def test_actions_alert_speaks_only_warning_and_critical(tmp_path, monkeypatch):
+    import store, actions
+    s = store.DeviceStore(data_dir=tmp_path)
+    s.set_setting("voice_enabled", "1")
+    spoken = []
+    monkeypatch.setattr(actions, "_speak", lambda t: spoken.append(t))
+    actions._on_alert_raised({"severity": "info", "title": "info one"}, store=s)
+    actions._on_alert_raised({"severity": "warning", "title": "warn one"}, store=s)
+    actions._on_alert_raised({"severity": "critical", "title": "crit one"}, store=s)
+    assert spoken == ["warn one", "crit one"]
+
+
+def test_actions_alert_silent_when_voice_disabled(tmp_path, monkeypatch):
+    import store, actions
+    s = store.DeviceStore(data_dir=tmp_path)
+    s.set_setting("voice_enabled", "0")
+    spoken = []
+    monkeypatch.setattr(actions, "_speak", lambda t: spoken.append(t))
+    actions._on_alert_raised({"severity": "critical", "title": "crit"}, store=s)
+    assert spoken == []
+
+
 def _fake_arp_run(cmd, *a, **kw):
     """Shared subprocess.run mock for scanner ARP tests."""
     class R:

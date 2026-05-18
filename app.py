@@ -11,6 +11,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import rumps
+import actions
 import classify
 import dashboard
 import detect
@@ -45,6 +46,7 @@ IS_FROZEN = getattr(sys, "frozen", False)
 PROJ_DIR  = os.path.dirname(os.path.abspath(__file__))
 
 store = DeviceStore()
+actions.wire(store)
 
 
 def _wifi_iface() -> str:
@@ -261,6 +263,12 @@ class InsApp(rumps.App):
             "webhooks":   store.webhooks(),
             "health":     store.latest_health() or self._compute_and_store_health(enriched),
             "wan_mappings": store.wan_mappings(),
+            "settings": {
+                "voice_enabled":          store.get_setting("voice_enabled", "0") == "1",
+                "shortcut_on_new_device": store.get_setting("shortcut_on_new_device", ""),
+                "shortcut_on_alert":      store.get_setting("shortcut_on_alert", ""),
+                "first_run_done":         store.get_setting("first_run_done", "0") == "1",
+            },
             "app_name":   __app_name__,
             "version":    __version__,
         }

@@ -603,7 +603,189 @@ function timeAgo(tsSeconds) {
   return `${Math.round(diff / 86400)}d ago`;
 }
 
+// ── device story drawer ──────────────────────────────────────────────────
+async function openDeviceStory(mac) {
+  try {
+    const story = await fetch(`/api/device/${encodeURIComponent(mac)}`).then(r => r.json());
+    if (!story || story.error) return;
+    const d = story.device || {};
+    const name = story.known_name || d.hostname || d.vendor || mac;
+    $("#device-drawer-title").textContent = name;
+
+    const sightings = (story.sightings || []).slice(0, 30);
+    const sightingsHtml = sightings.length
+      ? sightings.map(s => `
+          <div class="dstory-row">
+            <span class="dstory-ts">${escHtml(new Date(s.ts * 1000).toLocaleString())}</span>
+            <span class="dstory-ip">${escHtml(s.ip || "—")}</span>
+            <span class="dstory-lat">${s.latency_ms != null ? escHtml(s.latency_ms) + " ms" : ""}</span>
+          </div>`).join("")
+      : `<div class="empty">No sightings recorded yet.</div>`;
+
+    const alerts = (story.alerts || []).slice(0, 20);
+    const alertsHtml = alerts.length
+      ? alerts.map(a => {
+          const sev = a.severity || "info";
+          const icon = sev === "critical" ? "🚨" : sev === "warning" ? "⚠️" : "📡";
+          return `
+            <div class="dstory-alert sev-${escHtml(sev)}">
+              <div class="dstory-alert-head">${icon} <strong>${escHtml(a.title)}</strong></div>
+              <div class="dstory-alert-msg">${escHtml(a.message)}</div>
+              <div class="dstory-alert-ts">${escHtml(new Date(a.ts * 1000).toLocaleString())}${a.acknowledged ? " · acknowledged" : ""}</div>
+            </div>`;
+        }).join("")
+      : `<div class="empty">No alerts triggered by this device.</div>`;
+
+    const ports = (d.ports || []).length
+      ? (d.ports || []).map(p => `<span class="port-chip${RISKY_PORTS.has(p) ? " risky" : ""}">${p}</span>`).join("")
+      : `<span class="empty-inline">No ports observed open.</span>`;
+
+    const wan = (story.wan_exposed || []).length
+      ? (story.wan_exposed || []).map(m => `<div class="dstory-wan">⚠ External port ${escHtml(m.external_port)}/${escHtml(m.protocol)} forwarded to internal port ${escHtml(m.internal_port)}</div>`).join("")
+      : "";
+
+    $("#device-drawer-body").innerHTML = `
+      <h3>Identity</h3>
+      <dl class="dstory-meta">
+        <dt>IP</dt><dd>${escHtml(d.ip || "—")}</dd>
+        <dt>MAC</dt><dd>${escHtml(d.mac || "—")}</dd>
+        <dt>Vendor</dt><dd>${escHtml(d.vendor || "—")}</dd>
+        <dt>Type</dt><dd>${escHtml(d.device_type || "unknown")} (${Math.round((d.type_confidence || 0) * 100)}% confidence)</dd>
+        <dt>First seen</dt><dd>${escHtml(d.first_seen ? new Date(d.first_seen * 1000).toLocaleString() : "—")}</dd>
+        <dt>Last seen</dt><dd>${escHtml(d.last_seen ? new Date(d.last_seen * 1000).toLocaleString() : "—")}</dd>
+        <dt>Times seen</dt><dd>${escHtml(d.seen_count || 0)}</dd>
+        <dt>Known</dt><dd>${story.is_known ? `<strong>${escHtml(story.known_name || "yes")}</strong>` : "no"}</dd>
+      </dl>
+      ${wan}
+      <h3>Ports</h3>
+      <div class="dc-ports">${ports}</div>
+      <h3>Recent sightings (${sightings.length})</h3>
+      <div class="dstory-list">${sightingsHtml}</div>
+      <h3>Alerts triggered (${alerts.length})</h3>
+      <div class="dstory-list">${alertsHtml}</div>
+    `;
+
+    $("#device-drawer").hidden = false;
+    $("#drawer-scrim").hidden = false;
+  } catch (e) { /* swallow */ }
+}
+function closeDeviceDrawer() {
+  $("#device-drawer").hidden = true;
+  if ($("#alert-drawer").hidden) $("#drawer-scrim").hidden = true;
+}
+$("#device-drawer-close").addEventListener("click", closeDeviceDrawer);
+$("#drawer-scrim").addEventListener("click", closeDeviceDrawer);
+
+// Click anywhere on a device card (outside its buttons) to open the story.
+$("#device-grid").addEventListener("click", (e) => {
+  if (e.target.closest("[data-action], button, input, select")) return;
+  const card = e.target.closest(".device-card");
+  if (!card) return;
+  const mac = card.querySelector("[data-mac]")?.dataset.mac
+            || card.querySelector(".dc-name-sub")?.textContent.match(/[0-9A-F:]{17}/)?.[0];
+  if (mac) openDeviceStory(mac);
+});
+
+// ── onboarding tour ──────────────────────────────────────────────────────
+const TOUR_STEPS = [
+  {
+    title: "Welcome to Inglorious Network Scanner",
+    body:  "INS continuously watches everything on your WiFi and tells you in plain English when something deserves attention. Three quick things before you dive in.",
+  },
+  {
+    title: "Your Network Health Score",
+    body:  "The big number on the Overview tab is a 0–100 read of how safe your network looks right now. 100 means all clear; anything lower tells you exactly what to fix and by how much it would help.",
+  },
+  {
+    title: "Triage your unknown devices",
+    body:  "The Triage tab queues every device you haven't named yet. Spend two minutes naming the ones you recognize (your phone, your TV, the printer) so future joins of those devices stop worrying you. If you don't recognize one — change your WiFi password and remove it from the router.",
+  },
+];
+let TOUR_INDEX = 0;
+function showOnboardingIfNeeded() {
+  if (!STATE || !STATE.settings) return;
+  if (STATE.settings.first_run_done) return;
+  if (!$("#onboarding").hidden) return;
+  TOUR_INDEX = 0;
+  renderTourStep();
+  $("#onboarding").hidden = false;
+}
+function renderTourStep() {
+  const step = TOUR_STEPS[TOUR_INDEX];
+  $("#onboarding-step").innerHTML =
+    `<h2>${escHtml(step.title)}</h2><p>${escHtml(step.body)}</p>`;
+  $("#onboarding-pips").innerHTML = TOUR_STEPS
+    .map((_, i) => `<span class="pip ${i === TOUR_INDEX ? "active" : ""}"></span>`).join("");
+  $("#onboarding-next").textContent =
+    TOUR_INDEX === TOUR_STEPS.length - 1 ? "Got it" : "Next";
+}
+async function finishTour() {
+  $("#onboarding").hidden = true;
+  await api("/api/settings/save", { first_run_done: "1" });
+  refresh();
+}
+$("#onboarding-next").addEventListener("click", () => {
+  if (TOUR_INDEX < TOUR_STEPS.length - 1) {
+    TOUR_INDEX++;
+    renderTourStep();
+  } else {
+    finishTour();
+  }
+});
+$("#onboarding-skip").addEventListener("click", finishTour);
+
+// ── settings (voice / shortcuts) ─────────────────────────────────────────
+function paintSettings() {
+  const s = (STATE.settings || {});
+  const voiceEl = $("#setting-voice");
+  const newEl   = $("#setting-shortcut-new");
+  const altEl   = $("#setting-shortcut-alert");
+  if (voiceEl && document.activeElement !== voiceEl) voiceEl.checked = !!s.voice_enabled;
+  if (newEl   && document.activeElement !== newEl)   newEl.value     = s.shortcut_on_new_device || "";
+  if (altEl   && document.activeElement !== altEl)   altEl.value     = s.shortcut_on_alert || "";
+}
+$("#settings-save")?.addEventListener("click", async () => {
+  const status = $("#settings-status");
+  status.textContent = "Saving…";
+  await api("/api/settings/save", {
+    voice_enabled:          $("#setting-voice").checked ? "1" : "0",
+    shortcut_on_new_device: $("#setting-shortcut-new").value.trim(),
+    shortcut_on_alert:      $("#setting-shortcut-alert").value.trim(),
+  });
+  status.textContent = "Saved ✓";
+  setTimeout(() => { status.textContent = ""; }, 1500);
+  refresh();
+});
+
+// Add settings paint to the refresh chain.
+const _origPaintHook = paintHook;
+paintHook = function() { _origPaintHook(); paintSettings(); };
+
+// ── SSE live updates ─────────────────────────────────────────────────────
+// Subscribe to the server-side event bus so dashboard updates feel instant
+// instead of waiting on the polling tick. We KEEP a 30s polling fallback in
+// case the SSE connection drops (corporate proxies sometimes kill long
+// HTTP requests after a minute or two).
+function startSSE() {
+  if (typeof EventSource === "undefined") return;
+  try {
+    const es = new EventSource("/api/stream");
+    const onEvent = () => refresh();
+    es.addEventListener("scan.completed", onEvent);
+    es.addEventListener("alert.raised",   onEvent);
+    es.addEventListener("device.joined",  onEvent);
+    es.addEventListener("device.left",    onEvent);
+    es.addEventListener("device.ports_changed", onEvent);
+    es.addEventListener("device.vendor_changed", onEvent);
+    es.onerror = () => {
+      // Browser auto-retries; we don't need to do anything here.
+    };
+  } catch (e) { /* SSE not available; polling fallback covers it */ }
+}
+
 // ── boot ──────────────────────────────────────────────────────────────────
 showTab(CURRENT_TAB);
-refresh();
-setInterval(refresh, 3000);
+refresh().then(showOnboardingIfNeeded);
+startSSE();
+// Fallback polling — far less frequent now that SSE pushes deltas instantly.
+setInterval(refresh, 30000);
