@@ -126,3 +126,44 @@ def test_origin_check_rejects_foreign():
 
     h.headers = {}  # missing Origin/Referer
     assert not h._origin_ok()
+
+
+# ── updater ─────────────────────────────────────────────────────────────────
+
+def test_version_tuple_parses_v_prefix():
+    from updater import _version_tuple
+    assert _version_tuple("1.2.3") == (1, 2, 3)
+    assert _version_tuple("v1.2.3") == (1, 2, 3)
+    assert _version_tuple("garbage") == ()
+    assert _version_tuple("") == ()
+
+
+def test_check_for_update_returns_newer():
+    import updater
+    fake = MagicMock()
+    fake.read.return_value = json.dumps({
+        "tag_name": "v2.0.0",
+        "html_url": "https://example.com/releases/v2.0.0",
+        "body":     "Big release",
+    }).encode()
+    fake.__enter__ = lambda self: self
+    fake.__exit__ = lambda *a: None
+    with patch("updater.urllib.request.urlopen", return_value=fake):
+        result = updater.check_for_update(current="1.0.0")
+    assert result == {"tag": "2.0.0", "url": "https://example.com/releases/v2.0.0", "body": "Big release"}
+
+
+def test_check_for_update_returns_none_when_current():
+    import updater
+    fake = MagicMock()
+    fake.read.return_value = json.dumps({"tag_name": "v1.0.0", "html_url": "x"}).encode()
+    fake.__enter__ = lambda self: self
+    fake.__exit__ = lambda *a: None
+    with patch("updater.urllib.request.urlopen", return_value=fake):
+        assert updater.check_for_update(current="1.0.0") is None
+
+
+def test_check_for_update_returns_none_on_network_error():
+    import updater
+    with patch("updater.urllib.request.urlopen", side_effect=OSError("no network")):
+        assert updater.check_for_update(current="1.0.0") is None

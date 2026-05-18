@@ -1,6 +1,7 @@
 """py2app build script — run: python setup.py py2app"""
 
 from setuptools import setup
+from version import __version__
 
 APP     = ["app.py"]
 OPTIONS = {
@@ -9,8 +10,8 @@ OPTIONS = {
         "CFBundleName":                "NetScan",
         "CFBundleDisplayName":         "NetScan",
         "CFBundleIdentifier":          "com.netscan.wifiscanner",
-        "CFBundleVersion":             "1.0.0",
-        "CFBundleShortVersionString":  "1.0.0",
+        "CFBundleVersion":             __version__,
+        "CFBundleShortVersionString":  __version__,
         "LSUIElement":                 True,   # Hide from Dock
         "NSLocationWhenInUseUsageDescription":
             "NetScan reads the WiFi SSID to display your current network name.",
@@ -25,13 +26,13 @@ OPTIONS = {
         "CoreLocation",
         "SystemConfiguration",
     ],
-    "includes": ["scanner", "store", "dashboard", "wol"],
+    "includes": ["scanner", "store", "dashboard", "wol", "updater", "version"],
     "excludes": ["tkinter", "unittest", "xmlrpc"],
 }
 
 setup(
     name    = "NetScan",
-    version = "1.0.0",
+    version = __version__,
     app     = APP,
     options = {"py2app": OPTIONS},
     setup_requires = ["py2app"],

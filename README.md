@@ -35,6 +35,15 @@ sudo python app.py
 
 `install.sh` substitutes the venv Python path and `app.py` path into `com.wifiscanner.plist.tmpl` and loads it as a user LaunchAgent.
 
+### Updating
+
+NetScan checks the GitHub Releases API every 6 hours (and once 10 s after startup). When a newer release exists, a `⬆️  Update available  ·  vX.Y.Z` item appears at the top of the menubar.
+
+- **Source install** (cloned + `install.sh`): click the item, confirm, and `update.sh` runs `git pull --ff-only` and restarts the LaunchAgent via `launchctl kickstart -k`. Logs to `/tmp/netscan-update.log`. To check manually: `./update.sh`.
+- **DMG install** (`/Applications/NetScan.app`): click the item to open the release page; download and replace the .app.
+
+To cut a release: bump [version.py](version.py), tag `vX.Y.Z`, push the tag, and create a GitHub Release at that tag (with the DMG attached if you want DMG users to grab it directly).
+
 ## Build DMG
 
 ```bash

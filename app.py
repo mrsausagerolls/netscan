@@ -14,12 +14,18 @@ import rumps
 import dashboard
 from scanner import do_scan, enrich, scan_ports, probe_device, best_fingerprint, get_wifi_info
 from store import DeviceStore
+from updater import check_for_update
+from version import GITHUB_REPO, __version__
 from wol import wake
 
-POLL_INTERVAL = 5
-AUTO_RESCAN   = 5
-ICON          = "📡"
-DASH_PORT     = 8765
+POLL_INTERVAL    = 5
+AUTO_RESCAN      = 5
+ICON             = "📡"
+DASH_PORT        = 8765
+UPDATE_INTERVAL  = 6 * 60 * 60  # check GitHub Releases every 6 h
+
+IS_FROZEN = getattr(sys, "frozen", False)
+PROJ_DIR  = os.path.dirname(os.path.abspath(__file__))
 
 store = DeviceStore()
 
@@ -98,6 +104,8 @@ class WiFiScannerApp(rumps.App):
         self._use_fallback       = False
         self._pending: tuple | None = None  # (devices, network, ssid)
         self._loc_item_added     = False
+        self._update_info: dict | None = None
+        self._update_dirty       = False
 
         # Static menu items
         self._status    = rumps.MenuItem("Not connected")
@@ -111,7 +119,12 @@ class WiFiScannerApp(rumps.App):
             "⚠️  Allow Location Access for SSID →",
             callback=self._open_location_settings,
         )
-        self._quit = rumps.MenuItem("Quit", callback=rumps.quit_application)
+        self._update_item = rumps.MenuItem(
+            f"⬆️  Update available", callback=self._on_update_clicked,
+        )
+        self._quit = rumps.MenuItem(
+            f"Quit  ·  v{__version__}", callback=rumps.quit_application,
+        )
 
         self._build_menu()
 
@@ -123,15 +136,20 @@ class WiFiScannerApp(rumps.App):
         # Main-thread timer to safely update NSMenu
         rumps.Timer(self._flush_pending, 0.5).start()
         rumps.Timer(self._check_location, 5).start()
+        rumps.Timer(self._flush_update_item, 1).start()
 
         _request_location_permission()
         threading.Thread(target=self._monitor_loop, daemon=True).start()
+        threading.Thread(target=self._update_loop, daemon=True).start()
         self._trigger_scan()
 
     # ── Menu helpers ─────────────────────────────────────────────────────────
 
     def _build_menu(self):
-        items = [self._status, self._scan_time, None, self._dash_item, None, self._rescan]
+        items = []
+        if self._update_info:
+            items += [self._update_item, None]
+        items += [self._status, self._scan_time, None, self._dash_item, None, self._rescan]
         self._loc_item_added = not _location_authorized()
         if self._loc_item_added:
             items += [None, self._loc_item]
@@ -348,8 +366,10 @@ class WiFiScannerApp(rumps.App):
             device_items.append(row)
 
         self.menu.clear()
+        head = [self._update_item, None] if self._update_info else []
         self.menu.update(
-            [self._status, self._scan_time, None]
+            head
+            + [self._status, self._scan_time, None]
             + device_items
             + [None, self._dash_item, None, self._rescan, None, self._quit]
         )
@@ -390,6 +410,73 @@ class WiFiScannerApp(rumps.App):
 
     def _on_rescan(self, _):
         self._trigger_scan()
+
+    # ── Update check ──────────────────────────────────────────────────────────
+
+    def _update_loop(self):
+        # First check 10 s after startup so the menubar settles first.
+        time.sleep(10)
+        while True:
+            info = check_for_update(__version__)
+            with self._lock:
+                changed = info != self._update_info
+                self._update_info = info
+                if changed:
+                    self._update_dirty = True
+            time.sleep(UPDATE_INTERVAL)
+
+    def _flush_update_item(self, _):
+        """Main-thread: relabel the update item and rebuild the menu when info changes."""
+        with self._lock:
+            if not self._update_dirty:
+                return
+            self._update_dirty = False
+            info = self._update_info
+        if info:
+            self._update_item.title = f"⬆️  Update available  ·  v{info['tag']}"
+        # Force a menu rebuild — either with current devices or empty state.
+        with self._lock:
+            devices = list(self._devices)
+            network = self._net or ""
+            ssid    = self._ssid or "Unknown"
+            self._pending = (devices, network, ssid) if devices else None
+        if not devices:
+            self._build_menu()
+
+    def _on_update_clicked(self, _=None):
+        info = self._update_info
+        if not info:
+            return
+
+        # Frozen .app builds can't git-pull; just open the release page.
+        if IS_FROZEN:
+            subprocess.run(["open", info["url"]], check=False)
+            return
+
+        ok = rumps.alert(
+            title="Update NetScan",
+            message=f"Pull v{info['tag']} from GitHub and restart?\n\n"
+                    f"Runs: git pull --ff-only + launchctl restart.\n"
+                    f"Log: /tmp/netscan-update.log",
+            ok="Update", cancel="Cancel",
+        )
+        if ok != 1:
+            return
+
+        script = os.path.join(PROJ_DIR, "update.sh")
+        if not os.path.isfile(script):
+            rumps.alert("Update failed", f"update.sh not found at {script}")
+            return
+
+        # Detach so the script survives launchctl kickstart -k killing this process.
+        subprocess.Popen(
+            [script],
+            cwd=PROJ_DIR,
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
 
 
 if __name__ == "__main__":
