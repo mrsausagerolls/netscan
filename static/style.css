@@ -428,6 +428,19 @@ textarea#hook-script:focus{border-color:var(--cyan)}
 .settings-status{font-family:var(--mono);font-size:10px;color:var(--green);letter-spacing:.06em}
 .setting-hint{display:block;font-size:11px;color:var(--text3);font-family:var(--ui);font-weight:400;letter-spacing:0;text-transform:none;margin-top:2px;line-height:1.5}
 
+.ssid-banner{
+  display:flex;align-items:center;gap:14px;
+  padding:11px 22px;
+  background:linear-gradient(180deg, rgba(245,166,35,.12) 0%, rgba(245,166,35,.04) 100%);
+  border-bottom:1px solid rgba(245,166,35,.3);
+  font-size:12px;line-height:1.55;
+}
+.ssid-banner[hidden]{display:none}
+.ssid-banner-icon{font-size:16px;flex-shrink:0}
+.ssid-banner-body{color:var(--text2);max-width:920px}
+.ssid-banner-body strong{color:var(--yellow);font-weight:600}
+.ssid-banner-body em{color:var(--text);font-style:normal;font-weight:500}
+
 .dstory-router-actions{
   display:flex;align-items:center;gap:8px;
   padding:10px 12px;background:var(--bg2);border:1px solid var(--border2);border-radius:6px;

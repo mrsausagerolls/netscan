@@ -328,6 +328,20 @@ class InsApp(rumps.App):
     # ── SSID monitor ─────────────────────────────────────────────────────────
 
     def _monitor_loop(self):
+        """Trigger rescans periodically.
+
+        Two trigger paths:
+          1. SSID changed (we connected, disconnected, or moved networks).
+          2. AUTO_RESCAN seconds passed since the last scan.
+
+        Critically, path 2 runs whether or not we successfully detected an
+        SSID. macOS 14+ ties SSID reads to Location Services authorization;
+        without that grant, _current_ssid() returns "" — but the scan itself
+        only needs the interface IP/CIDR, which get_wifi_info() reads from
+        ifconfig (no permission required). So we keep scanning even when we
+        can't name the network. _run_scan handles "no WiFi interface" by
+        marking the title with "!" and returning silently.
+        """
         while True:
             ssid = _current_ssid()
             with self._lock:
@@ -335,14 +349,14 @@ class InsApp(rumps.App):
                 self._ssid = ssid
                 last       = self._last_scan
 
-            if changed:
-                if ssid:
-                    self._trigger_scan()
-                else:
-                    self.title            = ICON
-                    self._status.title    = "Not connected"
-                    self._scan_time.title = "Last scan: —"
-            elif ssid and (time.time() - last) > AUTO_RESCAN:
+            if changed and not ssid:
+                self.title            = ICON
+                self._status.title    = "Not connected"
+                self._scan_time.title = "Last scan: —"
+
+            if changed and ssid:
+                self._trigger_scan()
+            elif (time.time() - last) > AUTO_RESCAN:
                 self._trigger_scan()
 
             time.sleep(POLL_INTERVAL)

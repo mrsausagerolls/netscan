@@ -128,6 +128,14 @@ function paintHeader() {
 
   const tBadge = $("#nav-triage-badge");
   tBadge.textContent = (STATE.triage || []).length || "";
+
+  // Show the SSID-permission banner only when scanning works (network CIDR
+  // detected) but SSID detection failed — distinguishes "Location permission
+  // needed" from "not connected to any WiFi at all".
+  const banner = $("#ssid-banner");
+  if (banner) {
+    banner.hidden = !(STATE.network && !STATE.ssid);
+  }
 }
 
 // ── health ────────────────────────────────────────────────────────────────
