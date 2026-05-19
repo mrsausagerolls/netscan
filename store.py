@@ -352,6 +352,41 @@ class DeviceStore:
                 (json.dumps(hints), mac),
             )
 
+    def merge_fingerprint(self, mac: str, hints: dict):
+        """Merge `hints` into the existing fingerprint blob for `mac`.
+
+        Sources like the DHCP sniffer drip-feed individual signals (e.g. just
+        option 55) and shouldn't clobber probe results from scanner.py. Creates
+        a stub device row if we've never seen the MAC before — the next ARP
+        sweep will fill in IP / vendor.
+        """
+        mac = (mac or "").upper()
+        if not mac:
+            return
+        with self._tx() as db:
+            row = db.execute(
+                "SELECT fingerprint FROM devices WHERE mac=?", (mac,)
+            ).fetchone()
+            if row is None:
+                now = time.time()
+                db.execute(
+                    "INSERT INTO devices(mac, first_seen, last_seen, seen_count, "
+                    "fingerprint) VALUES(?,?,?,0,?)",
+                    (mac, now, now, json.dumps(hints)),
+                )
+                return
+            existing = {}
+            if row["fingerprint"]:
+                try:
+                    existing = json.loads(row["fingerprint"]) or {}
+                except (json.JSONDecodeError, TypeError):
+                    existing = {}
+            existing.update(hints)
+            db.execute(
+                "UPDATE devices SET fingerprint=? WHERE mac=?",
+                (json.dumps(existing), mac),
+            )
+
     def update_device_type(self, mac: str, device_type: str, confidence: float):
         with self._tx() as db:
             db.execute(
@@ -505,6 +540,23 @@ class DeviceStore:
             (mac.upper(), cutoff),
         )
         return [dict(r) for r in rows]
+
+    def bandwidth_recent(self, since_seconds: int = 1800) -> dict[str, list[tuple[int, int, int]]]:
+        """Batch-fetch recent samples for every MAC.
+
+        Returns `{mac: [(ts, bytes_in, bytes_out), ...]}`. One query, used by
+        the dashboard to draw per-row sparklines without N round-trips.
+        """
+        cutoff = time.time() - since_seconds
+        rows = self._q(
+            "SELECT mac, ts, bytes_in, bytes_out FROM bandwidth_samples "
+            "WHERE ts>=? ORDER BY mac, ts ASC",
+            (cutoff,),
+        )
+        out: dict[str, list[tuple[int, int, int]]] = {}
+        for r in rows:
+            out.setdefault(r["mac"], []).append((int(r["ts"]), int(r["bytes_in"]), int(r["bytes_out"])))
+        return out
 
     # ── DNS queries (passive sniffer) ────────────────────────────────────────
 

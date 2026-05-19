@@ -294,8 +294,59 @@ function sortKeyValue(d, key) {
     case "vendor": return (d.vendor || "").toLowerCase();
     case "type":   return (d.type_label || d.device_type || "").toLowerCase();
     case "ports":  return (d.ports || []).length;
+    case "bw":     return currentBps(d, "total");
     default:       return "";
   }
+}
+
+// Bandwidth helpers — samples come from the server as [(ts, bytes_in, bytes_out), ...]
+// each entry covering a ~60-second window flushed by the sniffer.
+function currentBps(d, dir /* "in" | "out" | "total" */) {
+  const s = d.bw_samples;
+  if (!Array.isArray(s) || !s.length) return 0;
+  const last = s[s.length - 1];
+  const window = 60;  // sniffer flush cadence
+  const bin  = last[1] / window;
+  const bout = last[2] / window;
+  if (dir === "in")  return bin;
+  if (dir === "out") return bout;
+  return bin + bout;
+}
+function fmtRate(bps) {
+  if (!bps || bps < 1) return "0";
+  const u = ["B/s","KB/s","MB/s","GB/s"];
+  let i = 0; let v = bps;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return (v >= 100 ? v.toFixed(0) : v.toFixed(1)) + " " + u[i];
+}
+function bandwidthCell(d) {
+  const samples = d.bw_samples || [];
+  if (!samples.length) {
+    return `<div class="dl-c dl-c-bw"><span class="bw-empty">—</span></div>`;
+  }
+  const inBps  = currentBps(d, "in");
+  const outBps = currentBps(d, "out");
+  // Sparkline: 60 slots @ 1px each = 60px wide; height 18px. Use TOTAL bytes
+  // (in+out) per sample so the line shape reflects "how active was this
+  // device", with in/out drawn as separate strokes.
+  const W = 80, H = 18;
+  const slots = samples.slice(-30);
+  const maxVal = Math.max(1, ...slots.map(s => Math.max(s[1], s[2])));
+  const scaleX = i => (W * i) / Math.max(1, slots.length - 1);
+  const scaleY = v => H - 1 - ((v / maxVal) * (H - 2));
+  const path = (idx) => slots.map((s, i) =>
+    `${i ? "L" : "M"}${scaleX(i).toFixed(1)} ${scaleY(s[idx]).toFixed(1)}`).join(" ");
+  return `
+    <div class="dl-c dl-c-bw" title="↓ ${fmtRate(inBps)}  ↑ ${fmtRate(outBps)} (last minute)">
+      <svg class="bw-spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+        <path class="in"  d="${escHtml(path(1))}"></path>
+        <path class="out" d="${escHtml(path(2))}"></path>
+      </svg>
+      <div class="bw-rate">
+        <b>↓ ${escHtml(fmtRate(inBps))}</b><br>
+        <b>↑ ${escHtml(fmtRate(outBps))}</b>
+      </div>
+    </div>`;
 }
 function sortedForList(devices) {
   const { key, dir } = LIST_SORT;
@@ -384,6 +435,7 @@ function deviceListRow(d) {
       <div class="dl-c dl-c-mac">${escHtml(d.mac || "—")}</div>
       <div class="dl-c dl-c-vendor">${escHtml(d.vendor || "—")}</div>
       <div class="dl-c dl-c-type">${escHtml(d.type_label || "—")}</div>
+      ${bandwidthCell(d)}
       <div class="dl-c dl-c-ports">${ports}${extraPortCount ? `<span class="dl-ports-more">+${extraPortCount}</span>` : ""}</div>
       <div class="dl-c dl-c-actions">${action}</div>
     </div>`;
@@ -1061,6 +1113,71 @@ function startSSE() {
     };
   } catch (e) { /* SSE not available; polling fallback covers it */ }
 }
+
+// ── Wi-Fi neighbor survey ────────────────────────────────────────────────
+function rssiKlass(r) {
+  if (r >= -55) return "strong";
+  if (r >= -75) return "weak";
+  return "bad";
+}
+function renderWifiResults(neighbors) {
+  const list = $("#wifi-list");
+  if (!neighbors || !neighbors.length) {
+    list.innerHTML = `<div class="empty">No nearby networks found.</div>`;
+    $("#wifi-channels").innerHTML = "";
+    return;
+  }
+  const rows = neighbors.map(n => `
+    <div class="wh-row${n.is_current ? " current" : ""}">
+      <div class="wh-ssid"><b>${escHtml(n.ssid || "(hidden)")}</b>${n.is_current ? '<span class="you">connected</span>' : ""}</div>
+      <div class="wh-bssid">${escHtml(n.bssid || "—")}</div>
+      <div class="wh-band">${escHtml(n.band || "—")}</div>
+      <div class="wh-channel">${n.channel || "—"}</div>
+      <div class="wh-rssi ${rssiKlass(n.rssi)}">${n.rssi} dBm</div>
+      <div class="wh-sec">${escHtml(n.security || "—")}</div>
+    </div>`).join("");
+  list.innerHTML = `
+    <div class="wh-head">
+      <div>SSID</div><div>BSSID</div><div>Band</div><div>Ch</div><div>RSSI</div><div>Security</div>
+    </div>${rows}`;
+  // Channel-occupancy chart per band — count strongest neighbor per channel.
+  const bands = { "2.4 GHz": [1,2,3,4,5,6,7,8,9,10,11,12,13],
+                  "5 GHz":   [36,40,44,48,52,56,60,64,100,104,108,112,116,120,124,128,132,136,140,149,153,157,161,165] };
+  const channels = $("#wifi-channels");
+  channels.innerHTML = Object.entries(bands).map(([band, chans]) => {
+    const occ = {};
+    neighbors.filter(n => n.band === band).forEach(n => {
+      if (!occ[n.channel] || n.rssi > occ[n.channel]) occ[n.channel] = n.rssi;
+    });
+    const bars = chans.map(ch => {
+      const r = occ[ch];
+      const h = r != null ? Math.max(8, Math.min(60, 64 + r)) : 6; // RSSI -64→0, -4→60
+      const cls = r == null ? "empty" : (neighbors.some(n => n.channel === ch && n.is_current) ? "active" : "");
+      return `<div class="wifi-bar ${cls}" style="height:${h}px" title="ch ${ch}${r != null ? ` · best ${r} dBm` : " · idle"}"><span class="ch-label">${ch}</span></div>`;
+    }).join("");
+    return `<div><h3>${band}</h3><div class="wifi-bars">${bars}</div></div>`;
+  }).join("");
+}
+
+async function runWifiScan() {
+  const btn = $("#wifi-scan"), status = $("#wifi-status");
+  if (!btn) return;
+  btn.disabled = true;
+  status.textContent = "Scanning… (3–10 s)";
+  try {
+    const r = await fetch("/api/wifi/scan", {
+      method: "POST", headers: {"Content-Type":"application/json"}, body: "{}",
+    }).then(r => r.json());
+    if (r.error) { status.textContent = `Error: ${r.error}`; return; }
+    renderWifiResults(r.neighbors || []);
+    status.textContent = `${(r.neighbors || []).length} networks · ${new Date().toLocaleTimeString()}`;
+  } catch (e) {
+    status.textContent = `Error: ${e.message || e}`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+document.getElementById("wifi-scan")?.addEventListener("click", runWifiScan);
 
 // ── header rescan button ─────────────────────────────────────────────────
 const rescanBtn = $("#hdr-rescan");

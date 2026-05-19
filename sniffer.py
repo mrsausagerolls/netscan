@@ -118,6 +118,7 @@ def _handle_packet(pkt, local_mac: str, threat_list, store) -> None:
         from scapy.layers.l2 import Ether                # type: ignore
         from scapy.layers.inet import IP                # type: ignore
         from scapy.layers.dns import DNS, DNSQR         # type: ignore
+        from scapy.layers.dhcp import DHCP, BOOTP       # type: ignore
     except ImportError:
         return
 
@@ -150,6 +151,40 @@ def _handle_packet(pkt, local_mac: str, threat_list, store) -> None:
             hit = threat_list.matches(qname) if threat_list else None
             if hit:
                 _publish_threat_alert(src_mac, qname, hit, store)
+
+    # DHCP fingerprinting — option 55 (Parameter Request List) is the strongest
+    # passive OS signal we can collect. The byte sequence differs between iOS,
+    # Android, Windows, etc., even when the client randomises its MAC. Record
+    # it only on Discover/Request (message types 1 and 3) so we don't overwrite
+    # with the server's reply.
+    if pkt.haslayer(DHCP):
+        try:
+            options = pkt[DHCP].options or []
+            msg_type = None
+            prl = None
+            vendor_class = None
+            for opt in options:
+                if not isinstance(opt, tuple) or len(opt) < 2:
+                    continue
+                name, val = opt[0], opt[1]
+                if name == "message-type":
+                    msg_type = int(val)
+                elif name == "param_req_list":
+                    prl = val
+                elif name == "vendor_class_id":
+                    vendor_class = val.decode("ascii", errors="ignore") if isinstance(val, (bytes, bytearray)) else str(val)
+            if msg_type in (1, 3) and prl is not None and pkt.haslayer(BOOTP):
+                # BOOTP `chaddr` is the client's hardware address — authoritative
+                # even when the L2 source is a relay or randomised.
+                chaddr = pkt[BOOTP].chaddr or b""
+                cmac = ":".join(f"{b:02X}" for b in chaddr[:6]) if chaddr else src_mac
+                fp_str = ",".join(str(int(b)) for b in prl)
+                hints = {"dhcp_55": fp_str}
+                if vendor_class:
+                    hints["dhcp_vendor_class"] = vendor_class
+                store.merge_fingerprint(cmac, hints)
+        except Exception:
+            pass  # malformed DHCP packets shouldn't kill the sniffer thread
 
     with _status_lock:
         _status.packets += 1

@@ -419,6 +419,13 @@ def best_fingerprint(hints: dict) -> str:
         val = hints.get(key, "")
         if val and val not in ("—", ""):
             return val
+    # Fall back to DHCP OS-family label when active probes had nothing —
+    # better than "—" for devices that decline mDNS/SSDP entirely.
+    if hints.get("dhcp_55"):
+        import classify  # local import to avoid a top-level cycle
+        lbl = classify.dhcp_label(hints)
+        if lbl:
+            return lbl
     return ""
 
 

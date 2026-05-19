@@ -305,10 +305,14 @@ class InsApp(rumps.App):
             last    = self._last_scan
         enriched = []
         seen = store.all_seen
+        # Batch-fetch bandwidth once per state build instead of per device —
+        # one SQL query, then attach each device's recent samples below.
+        bw_recent = store.bandwidth_recent(since_seconds=1800)
         for d in sorted(devices, key=lambda x: tuple(int(p) for p in x["ip"].split("."))):
             rec = seen.get(d["mac"], {})
             fp_hints = rec.get("fingerprint", {})
             dtype = rec.get("device_type", "unknown")
+            samples = bw_recent.get((d["mac"] or "").upper(), [])
             enriched.append({
                 "ip":              d["ip"],
                 "mac":             d["mac"],
@@ -327,6 +331,7 @@ class InsApp(rumps.App):
                 "type_confidence": rec.get("type_confidence", 0.0),
                 "no_probe":        rec.get("no_probe", False),
                 "wan_exposed":     store.wan_mappings_for(d.get("ip", "")),
+                "bw_samples":      samples,  # [(ts, in, out), ...] last 30 min
             })
         # Triage queue = unknown, non-self devices, ordered newest first.
         triage = sorted(
@@ -471,13 +476,20 @@ class InsApp(rumps.App):
                         store.add_known(d["mac"], name)
                 # Classify on every scan — cheap, and lets the type refine
                 # as ports/fingerprints come in over subsequent rescans.
-                fp_str = best_fingerprint(store.get_device(d["mac"]).get("fingerprint", {})
-                                          if store.get_device(d["mac"]) else {})
+                stored = store.get_device(d["mac"]) or {}
+                fp_hints = stored.get("fingerprint", {}) or {}
+                fp_str   = best_fingerprint(fp_hints)
+                # DHCP option 55 lets us still identify devices behind a
+                # randomised MAC — let it patch the empty vendor column.
+                dhcp_vendor_hint = classify.dhcp_vendor(fp_hints)
+                if dhcp_vendor_hint and d.get("vendor", "—") in ("", "—"):
+                    d["vendor"] = dhcp_vendor_hint
                 dtype, conf = classify.classify(
                     vendor=d.get("vendor", ""),
                     fingerprint=fp_str,
-                    ports=store.get_device(d["mac"]).get("ports", []) if store.get_device(d["mac"]) else [],
+                    ports=stored.get("ports", []),
                     hostname=d.get("hostname", ""),
+                    hints=fp_hints,
                 )
                 if d.get("me") and self_type != "unknown":
                     dtype, conf = self_type, 1.0

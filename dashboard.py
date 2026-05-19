@@ -165,6 +165,17 @@ class _Handler(BaseHTTPRequestHandler):
                 self.on_rescan()
             self._ok()
             return
+        if path == "/api/wifi/scan":
+            try:
+                import wifi
+                neighbors = wifi.scan_neighbors()
+            except Exception as e:
+                self._send(500, "application/json",
+                           json.dumps({"error": str(e)}).encode())
+                return
+            self._send(200, "application/json",
+                       json.dumps({"neighbors": neighbors}).encode())
+            return
         if path == "/api/known/add":
             self.store.add_known(body.get("mac", ""), body.get("name", ""))
             if self.on_known_change:

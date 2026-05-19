@@ -45,6 +45,7 @@
     <button class="navbtn" data-tab="triage">Triage <span class="badge" id="nav-triage-badge"></span></button>
     <button class="navbtn" data-tab="alerts">Security <span class="badge" id="nav-alert-badge"></span></button>
     <button class="navbtn" data-tab="history">History</button>
+    <button class="navbtn" data-tab="wifi">Wi-Fi</button>
     <button class="navbtn" data-tab="settings">Settings</button>
   </nav>
 
@@ -145,6 +146,7 @@
         <button type="button" class="dl-c dl-c-mac dl-sort" data-sort="mac">MAC</button>
         <button type="button" class="dl-c dl-c-vendor dl-sort" data-sort="vendor">Vendor</button>
         <button type="button" class="dl-c dl-c-type dl-sort" data-sort="type">Type</button>
+        <button type="button" class="dl-c dl-c-bw dl-sort" data-sort="bw" title="Bandwidth, last sample window (needs sniffer enabled — see Settings)">Traffic</button>
         <button type="button" class="dl-c dl-c-ports dl-sort" data-sort="ports">Ports</button>
         <div class="dl-c dl-c-actions"></div>
       </div>
@@ -195,6 +197,27 @@
       <h2>Known Devices</h2>
     </div>
     <div class="known-list" id="known-list"></div>
+  </section>
+
+  <!-- ── WI-FI VIEW ───────────────────────────────────────────────────────── -->
+  <section class="tab" id="tab-wifi" hidden>
+    <div class="pbar">
+      <h2>Nearby Wi-Fi networks</h2>
+      <div class="filters-right">
+        <button id="wifi-scan" class="btn btn-primary">Scan now</button>
+        <span class="settings-status" id="wifi-status"></span>
+      </div>
+    </div>
+    <p class="help" style="padding:0 22px">
+      Active scan via CoreWLAN. Useful for spotting crowded channels, finding
+      a quieter band to settle on, or detecting another AP broadcasting your
+      SSID. The scan takes a few seconds and briefly competes with your live
+      Wi-Fi connection.
+    </p>
+    <div class="wifi-channels" id="wifi-channels"></div>
+    <div class="wifi-list" id="wifi-list">
+      <div class="empty">Click <strong>Scan now</strong> to see nearby networks.</div>
+    </div>
   </section>
 
   <!-- ── SETTINGS VIEW ────────────────────────────────────────────────────── -->

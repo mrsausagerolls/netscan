@@ -156,6 +156,63 @@ _VENDOR_TYPE: list[tuple[str, str]] = [
     ("amazon, technologies", "voice_assistant"),
 ]
 
+# DHCP option-55 (Parameter Request List) signatures. The sequence of requested
+# parameters differs distinctly between operating systems even when the client
+# randomises its MAC. We match by "the full sequence equals X" first, then by
+# distinctive feature options as a fallback. Compiled from public DHCP traces
+# (fingerbank.org, Wireshark sample captures); add more as you observe them.
+#
+# Format: (option_55_sequence_as_csv_string, device_type, vendor_hint, label_hint)
+_DHCP_55_EXACT: list[tuple[str, str, str, str]] = [
+    # Apple — iOS / iPadOS
+    ("1,121,3,6,15,119,252",                          "phone",   "Apple", "iPhone / iPad"),
+    ("1,3,6,15,119,252",                              "phone",   "Apple", "iPhone / iPad"),
+    # Apple — macOS
+    ("1,121,3,6,15,114,119,252",                      "laptop",  "Apple", "Mac"),
+    ("1,3,6,15,114,119,252,95,44,46",                 "laptop",  "Apple", "Mac"),
+    # Android
+    ("1,3,6,15,26,28,51,58,59,43",                    "phone",   "",      "Android"),
+    ("1,33,3,6,15,26,28,51,58,59,43",                 "phone",   "",      "Android"),
+    # Windows 10 / 11
+    ("1,3,6,15,31,33,43,44,46,47,121,249,252",        "computer","",      "Windows"),
+    ("1,15,3,6,44,46,47,31,33,121,249,43,252",        "computer","",      "Windows"),
+    # ChromeOS
+    ("1,33,3,6,12,15,26,28,42,51,54,58,59,119,252",   "laptop",  "",      "ChromeOS"),
+    # Generic Linux / dhclient
+    ("1,28,2,121,15,6,12,40,41,42,26,119,3,121,249,33,252,42", "computer","","Linux"),
+]
+
+# Distinctive feature options — if the PRL contains them, we can still infer
+# coarse OS family even when the exact sequence doesn't match a known signature.
+# Triggers only when no _DHCP_55_EXACT match was found.
+_DHCP_55_FEATURES: list[tuple[set[int], str, str, str]] = [
+    # WPAD (252) is overwhelmingly an Apple/Microsoft thing; combined with 119
+    # (domain search) and 95 (LDAP) it leans Apple.
+    ({252, 119, 95},                                  "laptop",  "Apple", "Mac"),
+    # Window's Vista+ Classless Static Route (121) + ms-classless (249).
+    ({121, 249, 252},                                 "computer","",      "Windows"),
+    # Android-distinctive: 26 (Interface MTU) + 51 (Lease Time) early.
+    ({26, 51, 58, 59},                                "phone",   "",      "Android"),
+]
+
+
+def _match_dhcp(hints: dict) -> tuple[str, str, str, float] | None:
+    """Return (device_type, vendor_hint, label_hint, confidence) from DHCP
+    option 55 if we can. None when no DHCP fingerprint is recorded or no
+    signature matches."""
+    prl = (hints or {}).get("dhcp_55", "")
+    if not prl:
+        return None
+    for sig, dtype, vendor, label in _DHCP_55_EXACT:
+        if sig == prl:
+            return (dtype, vendor, label, 0.9)
+    requested = {int(x) for x in prl.split(",") if x.strip().isdigit()}
+    for feats, dtype, vendor, label in _DHCP_55_FEATURES:
+        if feats.issubset(requested):
+            return (dtype, vendor, label, 0.65)
+    return None
+
+
 # Fingerprint keyword (case-insensitive) → device type.
 _FP_KEYWORDS: list[tuple[str, str]] = [
     (r"apple tv\b",       "tv"),
@@ -227,11 +284,13 @@ def classify(
     fingerprint: str = "",
     ports: list[int] | None = None,
     hostname: str = "",
+    hints: dict | None = None,
 ) -> tuple[str, float]:
     """Return (device_type_key, confidence_0_to_1).
 
-    Priority: fingerprint keyword > vendor OUI > port heuristic > unknown.
-    Hostname is folded into the fingerprint check so router .local names work.
+    Priority: fingerprint keyword > DHCP-55 exact > vendor OUI > port
+    heuristic > DHCP-55 feature-set > unknown. Hostname is folded into the
+    fingerprint check so router .local names work.
     """
     ports_set = set(ports or [])
     combined_fp = " ".join(filter(None, [fingerprint, hostname]))
@@ -240,6 +299,10 @@ def classify(
     if fp_match:
         return fp_match
 
+    dhcp_match = _match_dhcp(hints or {})
+    if dhcp_match and dhcp_match[3] >= 0.85:
+        return (dhcp_match[0], dhcp_match[3])
+
     vendor_match = _match_vendor(vendor)
     port_match   = _port_type(ports_set)
 
@@ -247,10 +310,28 @@ def classify(
         return (vendor_match[0], 0.9)        # both signals agree → high confidence
     if vendor_match:
         return vendor_match
+    if dhcp_match:                           # weaker DHCP feature-set fallback
+        return (dhcp_match[0], dhcp_match[3])
     if port_match:
         return (port_match, 0.5)
 
     return ("unknown", 0.0)
+
+
+def dhcp_vendor(hints: dict | None) -> str:
+    """Return the vendor hint suggested by the DHCP fingerprint, or ""."""
+    m = _match_dhcp(hints or {})
+    return m[1] if m else ""
+
+
+def dhcp_label(hints: dict | None) -> str:
+    """Return a short OS-family label suggested by the DHCP fingerprint, or "".
+
+    Used as a fallback display name when probes don't yield an mDNS/SSDP
+    friendly name. Examples: "iPhone / iPad", "Mac", "Windows", "Android".
+    """
+    m = _match_dhcp(hints or {})
+    return m[2] if m else ""
 
 
 def label(device_type: str) -> str:
