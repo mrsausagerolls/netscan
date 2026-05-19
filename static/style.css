@@ -530,6 +530,21 @@ textarea#hook-script:focus{border-color:var(--cyan)}
 .dl-c-actions{justify-self:end;display:flex;align-items:center;gap:6px}
 .dl-self{font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--blue);font-weight:600}
 
+/* Sortable column headers — match the surrounding `.dl-c` styling but behave
+   like a button: pointer cursor, hover state, and a ▲/▼ glyph when active. */
+.dl-head .dl-sort{
+  appearance:none;background:transparent;border:0;padding:0;margin:0;
+  text-align:left;color:inherit;font:inherit;letter-spacing:inherit;
+  text-transform:inherit;cursor:pointer;
+  display:inline-flex;align-items:center;gap:4px;
+}
+.dl-head .dl-sort:hover{color:var(--text)}
+.dl-head .dl-sort.active{color:var(--text)}
+.dl-head .dl-sort.active::after{
+  content:"▲";font-size:8px;line-height:1;opacity:.75;
+}
+.dl-head .dl-sort.active[data-dir="desc"]::after{content:"▼"}
+
 @media (max-width: 980px){
   .dl-head, .dl-row{
     grid-template-columns: 24px 28px minmax(120px,1.2fr) 100px 150px 110px;

@@ -45,6 +45,7 @@
   </nav>
 
   <div class="hright">
+    <button class="btn btn-ghost btn-tiny" id="hdr-rescan" title="Rescan the network now">Rescan</button>
     <div class="live-pill"><span class="live-dot"></span> live</div>
     <div class="scantime" id="hdr-scantime">—</div>
   </div>
@@ -135,12 +136,12 @@
       <div class="dl-head">
         <div class="dl-c dl-c-status"></div>
         <div class="dl-c dl-c-icon"></div>
-        <div class="dl-c dl-c-name">Name</div>
-        <div class="dl-c dl-c-ip">IP</div>
-        <div class="dl-c dl-c-mac">MAC</div>
-        <div class="dl-c dl-c-vendor">Vendor</div>
-        <div class="dl-c dl-c-type">Type</div>
-        <div class="dl-c dl-c-ports">Ports</div>
+        <button type="button" class="dl-c dl-c-name dl-sort" data-sort="name">Name</button>
+        <button type="button" class="dl-c dl-c-ip dl-sort" data-sort="ip">IP</button>
+        <button type="button" class="dl-c dl-c-mac dl-sort" data-sort="mac">MAC</button>
+        <button type="button" class="dl-c dl-c-vendor dl-sort" data-sort="vendor">Vendor</button>
+        <button type="button" class="dl-c dl-c-type dl-sort" data-sort="type">Type</button>
+        <button type="button" class="dl-c dl-c-ports dl-sort" data-sort="ports">Ports</button>
         <div class="dl-c dl-c-actions"></div>
       </div>
       <div class="dl-body" id="device-list-body"></div>

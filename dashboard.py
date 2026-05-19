@@ -86,6 +86,7 @@ class _Handler(BaseHTTPRequestHandler):
     store = None
     get_state = None       # callable → dict
     on_known_change = None # callable → triggers menu redraw
+    on_rescan = None       # callable → triggers a fresh scan
     allowed_origins: set = set()  # populated in start()
 
     # ── auth ──────────────────────────────────────────────────────────────
@@ -159,6 +160,11 @@ class _Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length) or b"{}")
 
+        if path == "/api/rescan":
+            if self.on_rescan:
+                self.on_rescan()
+            self._ok()
+            return
         if path == "/api/known/add":
             self.store.add_known(body.get("mac", ""), body.get("name", ""))
             if self.on_known_change:
@@ -390,10 +396,11 @@ class _ThreadedServer(ThreadingMixIn, _Server):
         super().handle_error(request, client_address)
 
 
-def start(store, get_state, on_known_change=None, port: int = PORT):
+def start(store, get_state, on_known_change=None, on_rescan=None, port: int = PORT):
     _Handler.store            = store
     _Handler.get_state        = get_state
     _Handler.on_known_change  = on_known_change
+    _Handler.on_rescan        = on_rescan
     _Handler.allowed_origins  = {
         f"http://127.0.0.1:{port}",
         f"http://localhost:{port}",

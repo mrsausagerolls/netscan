@@ -227,6 +227,7 @@ class InsApp(rumps.App):
         # Start HTTP dashboard
         dashboard.start(store, self._dash_state,
                         on_known_change=self._refresh_devices_and_redraw,
+                        on_rescan=self._trigger_scan,
                         port=DASH_PORT)
 
         # Main-thread timer to safely update NSMenu

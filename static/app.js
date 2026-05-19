@@ -247,6 +247,67 @@ function setDevicesView(mode) {
 document.querySelectorAll(".vtbtn").forEach(b =>
   b.addEventListener("click", () => setDevicesView(b.dataset.view)));
 
+// Compact list view sort state. Persisted across reloads.
+// dir is "asc" or "desc"; key matches the data-sort attribute on a header cell.
+let LIST_SORT = (() => {
+  try {
+    return JSON.parse(localStorage.getItem("ins.listSort") || "null")
+      || { key: "ip", dir: "asc" };
+  } catch { return { key: "ip", dir: "asc" }; }
+})();
+
+function setListSort(key) {
+  if (LIST_SORT.key === key) {
+    LIST_SORT.dir = LIST_SORT.dir === "asc" ? "desc" : "asc";
+  } else {
+    LIST_SORT = { key, dir: "asc" };
+  }
+  localStorage.setItem("ins.listSort", JSON.stringify(LIST_SORT));
+  applyListSortIndicators();
+  if (STATE) paintDevices();
+}
+
+function applyListSortIndicators() {
+  document.querySelectorAll(".dl-head .dl-sort").forEach(el => {
+    const active = el.dataset.sort === LIST_SORT.key;
+    el.classList.toggle("active", active);
+    el.dataset.dir = active ? LIST_SORT.dir : "";
+  });
+}
+
+document.querySelectorAll(".dl-head .dl-sort").forEach(el =>
+  el.addEventListener("click", () => setListSort(el.dataset.sort)));
+applyListSortIndicators();
+
+// Numeric (dotted-quad) compare for IPs; lexical for everything else.
+function ipNum(s) {
+  const parts = String(s || "").split(".").map(n => parseInt(n, 10));
+  if (parts.length !== 4 || parts.some(isNaN)) return -1;
+  return ((parts[0] << 24) >>> 0) + (parts[1] << 16) + (parts[2] << 8) + parts[3];
+}
+function sortKeyValue(d, key) {
+  switch (key) {
+    case "name":   return (bestName(d) || "").toLowerCase();
+    case "ip":     return ipNum(d.ip);
+    case "mac":    return (d.mac || "").toLowerCase();
+    case "vendor": return (d.vendor || "").toLowerCase();
+    case "type":   return (d.type_label || d.device_type || "").toLowerCase();
+    case "ports":  return (d.ports || []).length;
+    default:       return "";
+  }
+}
+function sortedForList(devices) {
+  const { key, dir } = LIST_SORT;
+  const sign = dir === "desc" ? -1 : 1;
+  return [...devices].sort((a, b) => {
+    const av = sortKeyValue(a, key);
+    const bv = sortKeyValue(b, key);
+    if (av < bv) return -1 * sign;
+    if (av > bv) return  1 * sign;
+    return 0;
+  });
+}
+
 function paintDevices() {
   // Rebuild type filter once per refresh to reflect newly-classified types.
   const seenTypes = new Set(STATE.devices.map(d => d.device_type).filter(Boolean));
@@ -289,7 +350,7 @@ function paintDevicesList(visible) {
     body.innerHTML = `<div class="empty">No devices match the current filter.</div>`;
     return;
   }
-  body.innerHTML = visible.map(deviceListRow).join("");
+  body.innerHTML = sortedForList(visible).map(deviceListRow).join("");
   body.querySelectorAll("[data-action]").forEach(el => {
     el.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -998,6 +1059,26 @@ function startSSE() {
       // Browser auto-retries; we don't need to do anything here.
     };
   } catch (e) { /* SSE not available; polling fallback covers it */ }
+}
+
+// ── header rescan button ─────────────────────────────────────────────────
+const rescanBtn = $("#hdr-rescan");
+if (rescanBtn) {
+  rescanBtn.addEventListener("click", async () => {
+    if (rescanBtn.dataset.busy === "1") return;
+    rescanBtn.dataset.busy = "1";
+    const original = rescanBtn.textContent;
+    rescanBtn.textContent = "Scanning…";
+    rescanBtn.disabled = true;
+    try {
+      await api("/api/rescan", {});
+    } catch { /* surface failure via the status pill, not a noisy alert */ }
+    setTimeout(() => {
+      rescanBtn.textContent = original;
+      rescanBtn.disabled = false;
+      rescanBtn.dataset.busy = "0";
+    }, 1200);
+  });
 }
 
 // ── boot ──────────────────────────────────────────────────────────────────
