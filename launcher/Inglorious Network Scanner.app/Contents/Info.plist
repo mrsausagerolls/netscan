@@ -17,9 +17,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>2.4.6</string>
+    <string>2.4.7</string>
     <key>CFBundleVersion</key>
-    <string>2.4.6</string>
+    <string>2.4.7</string>
     <key>CFBundleSignature</key>
     <string>????</string>
     <key>CFBundleIconFile</key>
@@ -34,5 +34,21 @@
     <string>© 2026 Inglorious Labs</string>
     <key>NSLocationWhenInUseUsageDescription</key>
     <string>Inglorious Network Scanner reads the Wi-Fi SSID to display your current network name. macOS 14+ requires Location Services authorization to expose SSID.</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Inglorious Network Scanner discovers devices on your local network via ARP and mDNS so it can show what's connected to your Wi-Fi.</string>
+    <key>NSBonjourServices</key>
+    <array>
+      <string>_services._dns-sd._udp</string>
+      <string>_companion-link._tcp</string>
+      <string>_airplay._tcp</string>
+      <string>_homekit._tcp</string>
+      <string>_hap._tcp</string>
+      <string>_printer._tcp</string>
+      <string>_ipp._tcp</string>
+      <string>_http._tcp</string>
+      <string>_workstation._tcp</string>
+      <string>_smb._tcp</string>
+      <string>_afpovertcp._tcp</string>
+    </array>
 </dict>
 </plist>

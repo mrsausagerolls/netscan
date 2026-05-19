@@ -54,10 +54,30 @@ fi
 # "Inglorious Network Scanner" instead of "Python". PYTHONPATH is set in the
 # plist so the in-app Python still finds the venv's site-packages.
 if [[ "$LAUNCHER_INSTALLED" == "true" ]]; then
-    REAL_PY="$("$PY" -c 'import sys; print(getattr(sys, "_base_executable", sys.executable))')"
+    # Copy the GUI Python binary (Python.app/Contents/MacOS/Python), not the
+    # `bin/python3.X` CLI stub. The CLI stub posix_spawns the framework's
+    # Python.app at startup, which would re-execute the process there and
+    # erase the .app bundle identity we're setting up here. The GUI binary
+    # runs in-place and keeps the bundle/TCC identity intact.
+    BIN_PY="$("$PY" -c 'import sys; print(getattr(sys, "_base_executable", sys.executable))')"
+    GUI_PY="$("$PY" -c '
+import os, sys
+exe = getattr(sys, "_base_executable", sys.executable)
+real = os.path.realpath(exe)
+# .../Python.framework/Versions/<V>/bin/pythonX.Y  →  .../Resources/Python.app/Contents/MacOS/Python
+version_root = os.path.dirname(os.path.dirname(real))
+candidate = os.path.join(version_root, "Resources", "Python.app", "Contents", "MacOS", "Python")
+print(candidate if os.path.isfile(candidate) else exe)
+')"
     PROG_PY="$LAUNCHER_DST/Contents/MacOS/python$PY_VER"
-    cp "$REAL_PY" "$PROG_PY"
+    cp "$GUI_PY" "$PROG_PY"
     chmod +x "$PROG_PY"
+    # Re-sign ad-hoc with the bundle's identifier. macOS TCC keys permissions
+    # by the binary's code-signing identity, not its enclosing .app path —
+    # without this, requests would still be attributed to the original
+    # "python3-<hash>" identifier instead of the bundle.
+    codesign --force --sign - --identifier "co.ingloriouslabs.netscan" "$PROG_PY" 2>/dev/null \
+        && echo "signed:    $PROG_PY (identifier co.ingloriouslabs.netscan)"
 else
     PROG_PY="$PY"
 fi
