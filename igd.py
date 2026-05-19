@@ -128,6 +128,45 @@ def _parse_device_xml(location: str) -> dict | None:
 # ── Port-mapping enumeration ─────────────────────────────────────────────────
 
 
+def get_external_ip(igd: dict) -> str | None:
+    """Query the IGD for the WAN-side public IP via UPnP `GetExternalIPAddress`.
+
+    Returns the IPv4 string ("203.0.113.42") or None when the router doesn't
+    expose it, the call fails, or we got an empty / 0.0.0.0 reply. Keeps the
+    no-telemetry posture — no third-party echo service is involved.
+    """
+    body = (
+        '<?xml version="1.0"?>\n'
+        '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
+        's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">'
+        "<s:Body>"
+        f'<u:GetExternalIPAddress xmlns:u="{igd["service_type"]}"/>'
+        "</s:Body></s:Envelope>"
+    ).encode()
+    req = urllib.request.Request(
+        igd["control_url"],
+        data=body,
+        headers={
+            "Content-Type": 'text/xml; charset="utf-8"',
+            "SOAPAction":   f'"{igd["service_type"]}#GetExternalIPAddress"',
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            xml = resp.read(4096)
+    except Exception:
+        return None
+    try:
+        root = ElementTree.fromstring(xml)
+    except ElementTree.ParseError:
+        return None
+    for el in root.iter():
+        if el.tag.rsplit("}", 1)[-1] == "NewExternalIPAddress":
+            ip = (el.text or "").strip()
+            return ip if ip and ip != "0.0.0.0" else None
+    return None
+
+
 def list_port_mappings(igd: dict, max_entries: int = 64) -> list[Mapping]:
     """Walk GetGenericPortMappingEntry from index 0 until the router returns
     SpecifiedArrayIndexInvalid (HTTP 500 on most routers).

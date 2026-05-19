@@ -118,6 +118,7 @@ async function refresh() {
 function paintHeader() {
   $("#hdr-ssid").textContent  = STATE.ssid || "—";
   $("#hdr-net").textContent   = STATE.network || "—";
+  $("#hdr-public-ip").textContent = STATE.public_ip || "—";
   $("#hdr-count").textContent = STATE.count || 0;
   $("#hdr-alerts").textContent = STATE.unack_count || 0;
   $("#hdr-scantime").textContent = `last scan ${STATE.last_scan}`;

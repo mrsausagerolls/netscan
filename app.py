@@ -183,6 +183,31 @@ def _local_computer_name() -> str:
     return ""
 
 
+def _local_mac_model() -> tuple[str, str]:
+    """Return (device_type, vendor) for the running Mac.
+
+    Wi-Fi MAC randomization (private addresses) means the OUI lookup yields
+    nothing for the host running INS, and no fingerprint traffic is captured
+    from self — so the generic classifier falls back to "unknown" for the
+    user's own machine. `sysctl hw.model` is the authoritative signal: pick
+    the right type from the model family.
+    """
+    try:
+        model = subprocess.run(
+            ["sysctl", "-n", "hw.model"],
+            capture_output=True, text=True, timeout=2, check=False,
+        ).stdout.strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        model = ""
+    if model.startswith("MacBook"):
+        return ("laptop", "Apple")
+    if model.startswith(("iMac", "Macmini", "MacPro", "MacStudio", "Mac1", "Mac14", "Mac15", "Mac16")):
+        # Apple silicon desktops report identifiers like "Mac14,3" (Mac mini)
+        # and "Mac15,4" (iMac) — keep the prefix list generous.
+        return ("desktop", "Apple")
+    return ("computer", "Apple") if model else ("unknown", "")
+
+
 class InsApp(rumps.App):
     def __init__(self):
         super().__init__(ICON, quit_button=None)
@@ -198,6 +223,7 @@ class InsApp(rumps.App):
         self._loc_item_added     = False
         self._update_info: dict | None = None
         self._update_dirty       = False
+        self._public_ip: str | None = None
 
         # Static menu items
         self._status    = rumps.MenuItem("Not connected")
@@ -310,6 +336,7 @@ class InsApp(rumps.App):
         return {
             "ssid":       ssid or "",
             "network":    self._net or "",
+            "public_ip":  self._public_ip or "",
             "count":      len(devices),
             "last_scan":  time.strftime("%H:%M:%S", time.localtime(last)) if last else "—",
             "devices":    enriched,
@@ -420,7 +447,19 @@ class InsApp(rumps.App):
             devices = enrich(devices, local_ip, skip_vendor=False)
 
             # Persist to store; this also stamps _is_new / _vendor_changed.
+            self_type, self_vendor = ("unknown", "")
             for d in devices:
+                # For the local Mac we know the platform authoritatively:
+                # Wi-Fi MAC randomization breaks OUI lookup, and no scanner
+                # fingerprint traffic ever comes back from self, so the
+                # generic classifier always falls back to "unknown" without
+                # these overrides. Apply them before `touch` so the right
+                # vendor lands in the device row.
+                if d.get("me"):
+                    if self_type == "unknown":
+                        self_type, self_vendor = _local_mac_model()
+                    if self_vendor and d.get("vendor", "—") in ("", "—"):
+                        d["vendor"] = self_vendor
                 store.touch(d)
                 # Auto-name the local Mac on first sighting. Safe to mark Known —
                 # it's literally the host running INS. Idempotent: only fires if
@@ -440,6 +479,8 @@ class InsApp(rumps.App):
                     ports=store.get_device(d["mac"]).get("ports", []) if store.get_device(d["mac"]) else [],
                     hostname=d.get("hostname", ""),
                 )
+                if d.get("me") and self_type != "unknown":
+                    dtype, conf = self_type, 1.0
                 store.update_device_type(d["mac"], dtype, conf)
                 d["device_type"]     = dtype
                 d["type_confidence"] = conf
@@ -714,6 +755,13 @@ class InsApp(rumps.App):
                 if igd_meta:
                     mappings = igd.list_port_mappings(igd_meta)
                     store.record_wan_mappings(mappings)
+                    # All LAN devices share one external IPv4 via NAT — surface
+                    # it once in the dashboard header. UPnP-sourced so no
+                    # third-party echo service is involved.
+                    ip = igd.get_external_ip(igd_meta)
+                    if ip:
+                        with self._lock:
+                            self._public_ip = ip
             except Exception:
                 pass
             time.sleep(WAN_REFRESH_INTERVAL)
