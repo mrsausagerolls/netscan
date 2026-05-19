@@ -601,9 +601,17 @@ function paintAlerts() {
   wireAlertActions(list);
 }
 
+// Stroke SVG severity glyphs. Keeps icons consistent across the dashboard and
+// avoids the AI-emoji look on a security-ops surface.
+const SEV_ICON = {
+  critical: `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9.25"/><path d="M12 8v5"/><circle cx="12" cy="16.4" r=".7" fill="currentColor" stroke="none"/></svg>`,
+  warning:  `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.66 3.62 1.95 18.5a1.55 1.55 0 0 0 1.34 2.33h17.42a1.55 1.55 0 0 0 1.34-2.33L13.34 3.62a1.55 1.55 0 0 0-2.68 0Z"/><path d="M12 10v4"/><circle cx="12" cy="17.4" r=".7" fill="currentColor" stroke="none"/></svg>`,
+  info:     `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9.25"/><path d="M12 11.2v4.6"/><circle cx="12" cy="8.2" r=".75" fill="currentColor" stroke="none"/></svg>`,
+};
+
 function alertRow(a) {
   const sev  = a.severity || "info";
-  const icon = sev === "critical" ? "🚨" : sev === "warning" ? "⚠️" : "📡";
+  const icon = SEV_ICON[sev] || SEV_ICON.info;
   return `
     <div class="alert-row sev-${escHtml(sev)} ${a.acknowledged ? "is-ack" : ""}" data-alert-kind="${escHtml(a.kind)}">
       <div class="alert-sev">${icon}</div>
@@ -819,10 +827,10 @@ async function openDeviceStory(mac) {
     const alertsHtml = alerts.length
       ? alerts.map(a => {
           const sev = a.severity || "info";
-          const icon = sev === "critical" ? "🚨" : sev === "warning" ? "⚠️" : "📡";
+          const icon = SEV_ICON[sev] || SEV_ICON.info;
           return `
             <div class="dstory-alert sev-${escHtml(sev)}">
-              <div class="dstory-alert-head">${icon} <strong>${escHtml(a.title)}</strong></div>
+              <div class="dstory-alert-head"><span class="dstory-alert-icon">${icon}</span><strong>${escHtml(a.title)}</strong></div>
               <div class="dstory-alert-msg">${escHtml(a.message)}</div>
               <div class="dstory-alert-ts">${escHtml(new Date(a.ts * 1000).toLocaleString())}${a.acknowledged ? " · acknowledged" : ""}</div>
             </div>`;
@@ -834,13 +842,13 @@ async function openDeviceStory(mac) {
       : `<span class="empty-inline">No ports observed open.</span>`;
 
     const wan = (story.wan_exposed || []).length
-      ? (story.wan_exposed || []).map(m => `<div class="dstory-wan">⚠ External port ${escHtml(m.external_port)}/${escHtml(m.protocol)} forwarded to internal port ${escHtml(m.internal_port)}</div>`).join("")
+      ? (story.wan_exposed || []).map(m => `<div class="dstory-wan">${SEV_ICON.warning} External port ${escHtml(m.external_port)}/${escHtml(m.protocol)} forwarded to internal port ${escHtml(m.internal_port)}</div>`).join("")
       : "";
 
     const routerKind = (STATE.settings && STATE.settings.router_kind) || "none";
     const blockButton = (routerKind === "none" || d.me)
       ? ""
-      : `<button class="btn btn-danger" id="router-block-mac" data-mac="${escHtml(d.mac)}">⛔ Block on router</button>
+      : `<button class="btn btn-danger" id="router-block-mac" data-mac="${escHtml(d.mac)}">Block on router</button>
          <button class="btn" id="router-unblock-mac" data-mac="${escHtml(d.mac)}">Unblock</button>`;
 
     $("#device-drawer-body").innerHTML = `

@@ -5,19 +5,29 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Inglorious Network Scanner</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <header>
   <div class="brand">
-    <div class="brand-mark">📡</div>
+    <div class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="9.25"/>
+        <circle cx="12" cy="12" r="5"/>
+        <circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/>
+        <path d="M12 2.5v3.2M12 18.3v3.2M2.5 12h3.2M18.3 12h3.2"/>
+      </svg>
+    </div>
     <div class="brand-stack">
       <div class="brand-name">Inglorious</div>
       <div class="brand-sub">Network Scanner</div>
     </div>
   </div>
+
   <div class="hdiv"></div>
+
   <div class="hstat">
     <div class="hstat-l">Network</div>
     <div class="hstat-v" id="hdr-ssid">—</div>
@@ -39,6 +49,14 @@
     <div class="hstat-v" id="hdr-alerts">0</div>
   </div>
 
+  <div class="hright">
+    <div class="live-pill"><span class="live-dot"></span> live</div>
+    <div class="scantime" id="hdr-scantime">—</div>
+    <button class="btn btn-primary btn-tiny" id="hdr-rescan" title="Rescan the network now">↻ Rescan</button>
+  </div>
+</header>
+
+<div class="hnav-bar">
   <nav class="hnav">
     <button class="navbtn active" data-tab="overview">Overview</button>
     <button class="navbtn" data-tab="devices">Devices</button>
@@ -48,13 +66,7 @@
     <button class="navbtn" data-tab="wifi">Wi-Fi</button>
     <button class="navbtn" data-tab="settings">Settings</button>
   </nav>
-
-  <div class="hright">
-    <button class="btn btn-ghost btn-tiny" id="hdr-rescan" title="Rescan the network now">Rescan</button>
-    <div class="live-pill"><span class="live-dot"></span> live</div>
-    <div class="scantime" id="hdr-scantime">—</div>
-  </div>
-</header>
+</div>
 
 <div class="ssid-banner" id="ssid-banner" hidden>
   <div class="ssid-banner-icon">⚠️</div>
