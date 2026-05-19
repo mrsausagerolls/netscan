@@ -29,27 +29,34 @@ cd "$PROJ"
     fi
   fi
 
-  # Refresh the clickable launcher in /Applications and the CLI symlink so
-  # in-app updates don't lag behind get.sh installs. Idempotent.
-  LAUNCHER_SRC="$PROJ/launcher/Inglorious Network Scanner.app"
-  LAUNCHER_DST="/Applications/Inglorious Network Scanner.app"
-  if [[ -d "$LAUNCHER_SRC" && -w "/Applications" ]]; then
-    rm -rf "$LAUNCHER_DST"
-    cp -R "$LAUNCHER_SRC" "$LAUNCHER_DST" && echo "launcher refreshed: $LAUNCHER_DST"
-  fi
   CLI_SRC="$PROJ/tools/ins"
   if [[ -x "$CLI_SRC" ]]; then
     mkdir -p "$HOME/.local/bin"
     ln -sf "$CLI_SRC" "$HOME/.local/bin/ins" && echo "cli refreshed: $HOME/.local/bin/ins"
   fi
 
-  # Restart via launchd. kickstart -k stops and restarts the job atomically.
-  if [[ -f "$PLIST" ]]; then
-    uid="$(id -u)"
-    launchctl kickstart -k "gui/$uid/$LABEL" 2>/dev/null \
-      || { launchctl unload "$PLIST" 2>/dev/null || true; launchctl load "$PLIST"; }
-    echo "restarted via launchd"
+  # When install.sh, the LaunchAgent template, or the launcher .app changed,
+  # re-run install.sh — it regenerates the plist (and re-embeds Python in the
+  # .app for TCC bundle identity) and reloads launchd in one shot. Otherwise
+  # just refresh the launcher and bounce the agent.
+  changed_files="$(git diff --name-only "$before" "$after")"
+  if echo "$changed_files" | grep -qE '^(install\.sh|co\.ingloriouslabs\.netscan\.plist\.tmpl|launcher/)'; then
+    echo "install-affecting files changed — re-running install.sh"
+    ./install.sh
   else
-    echo "no LaunchAgent installed at $PLIST — start manually"
+    LAUNCHER_SRC="$PROJ/launcher/Inglorious Network Scanner.app"
+    LAUNCHER_DST="/Applications/Inglorious Network Scanner.app"
+    if [[ -d "$LAUNCHER_SRC" && -w "/Applications" ]]; then
+      rm -rf "$LAUNCHER_DST"
+      cp -R "$LAUNCHER_SRC" "$LAUNCHER_DST" && echo "launcher refreshed: $LAUNCHER_DST"
+    fi
+    if [[ -f "$PLIST" ]]; then
+      uid="$(id -u)"
+      launchctl kickstart -k "gui/$uid/$LABEL" 2>/dev/null \
+        || { launchctl unload "$PLIST" 2>/dev/null || true; launchctl load "$PLIST"; }
+      echo "restarted via launchd"
+    else
+      echo "no LaunchAgent installed at $PLIST — start manually"
+    fi
   fi
 } >> "$LOG" 2>&1

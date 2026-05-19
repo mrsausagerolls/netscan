@@ -30,26 +30,49 @@ if [[ -f "$OLD_PLIST" ]]; then
   rm -f "$OLD_PLIST"
 fi
 
+PY_VER="$("$PY" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+SITE_PACKAGES="$PROJ/.venv/lib/python$PY_VER/site-packages"
+
+LAUNCHER_SRC="$PROJ/launcher/Inglorious Network Scanner.app"
+LAUNCHER_DST="/Applications/Inglorious Network Scanner.app"
+LAUNCHER_INSTALLED=false
+if [[ -d "$LAUNCHER_SRC" ]]; then
+    if [[ -w "/Applications" ]]; then
+        rm -rf "$LAUNCHER_DST"
+        cp -R "$LAUNCHER_SRC" "$LAUNCHER_DST"
+        LAUNCHER_INSTALLED=true
+        echo "launcher: $LAUNCHER_DST  (double-click to open the dashboard)"
+    else
+        echo "launcher: /Applications isn't writable; drag '$LAUNCHER_SRC' there yourself."
+    fi
+fi
+
+# When the launcher .app is installed, run a copy of the Python interpreter
+# from inside it. macOS infers a process's bundle identity by walking up from
+# the executable path to the nearest Info.plist — placing python3.X inside
+# the .app makes Location Services (and any other TCC prompt) label the app
+# "Inglorious Network Scanner" instead of "Python". PYTHONPATH is set in the
+# plist so the in-app Python still finds the venv's site-packages.
+if [[ "$LAUNCHER_INSTALLED" == "true" ]]; then
+    REAL_PY="$("$PY" -c 'import sys; print(getattr(sys, "_base_executable", sys.executable))')"
+    PROG_PY="$LAUNCHER_DST/Contents/MacOS/python$PY_VER"
+    cp "$REAL_PY" "$PROG_PY"
+    chmod +x "$PROG_PY"
+else
+    PROG_PY="$PY"
+fi
+
 mkdir -p "$(dirname "$PLIST_DST")"
-sed -e "s|__PYTHON__|$PY|" -e "s|__APP__|$APP|" "$TMPL" > "$PLIST_DST"
+sed -e "s|__PYTHON__|$PROG_PY|" \
+    -e "s|__APP__|$APP|" \
+    -e "s|__PYTHONPATH__|$SITE_PACKAGES|" \
+    "$TMPL" > "$PLIST_DST"
 
 launchctl unload "$PLIST_DST" 2>/dev/null || true
 launchctl load "$PLIST_DST"
 
 echo "installed: $PLIST_DST"
 echo "logs:      /tmp/ins.log  /tmp/ins.err"
-
-LAUNCHER_SRC="$PROJ/launcher/Inglorious Network Scanner.app"
-LAUNCHER_DST="/Applications/Inglorious Network Scanner.app"
-if [[ -d "$LAUNCHER_SRC" ]]; then
-    if [[ -w "/Applications" ]]; then
-        rm -rf "$LAUNCHER_DST"
-        cp -R "$LAUNCHER_SRC" "$LAUNCHER_DST"
-        echo "launcher: $LAUNCHER_DST  (double-click to open the dashboard)"
-    else
-        echo "launcher: /Applications isn't writable; drag '$LAUNCHER_SRC' there yourself."
-    fi
-fi
 
 CLI_SRC="$PROJ/tools/ins"
 CLI_LOCAL_BIN="$HOME/.local/bin"

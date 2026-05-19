@@ -11,6 +11,15 @@
     <string>__APP__</string>
   </array>
 
+  <!-- install.sh injects PYTHONPATH here so the in-app Python can still
+       reach the venv's site-packages. When Python lives inside the launcher
+       .app, macOS labels Location/TCC entries with the bundle's display name
+       ("Inglorious Network Scanner") instead of "Python". -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONPATH</key><string>__PYTHONPATH__</string>
+  </dict>
+
   <!-- Start immediately on login -->
   <key>RunAtLoad</key><true/>
 

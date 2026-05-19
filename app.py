@@ -57,6 +57,39 @@ events.subscribe(events.ALERT_RAISED, _on_alert_raised)
 IS_FROZEN = getattr(sys, "frozen", False)
 PROJ_DIR  = os.path.dirname(os.path.abspath(__file__))
 
+
+def _ensure_launchagent_uses_in_app_python():
+    """Self-heal: when the launcher .app is installed but the LaunchAgent
+    plist still points at the venv Python (pre-2.4.6 layout), re-run
+    install.sh. macOS labels Location/TCC entries by the bundle containing
+    the running executable — embedding Python inside the .app gets the
+    proper "Inglorious Network Scanner" label instead of "Python".
+
+    No-ops once install.sh has rewritten the plist to use the in-app Python.
+    """
+    if IS_FROZEN or sys.platform != "darwin":
+        return
+    bundle = "/Applications/Inglorious Network Scanner.app"
+    plist  = os.path.expanduser("~/Library/LaunchAgents/co.ingloriouslabs.netscan.plist")
+    install_sh = os.path.join(PROJ_DIR, "install.sh")
+    if not (os.path.isdir(bundle) and os.path.isfile(plist) and os.path.isfile(install_sh)):
+        return
+    if not os.access("/Applications", os.W_OK):
+        return  # install.sh wouldn't be able to refresh the in-app Python — avoid restart loop
+    try:
+        if bundle in open(plist).read():
+            return
+    except OSError:
+        return
+    subprocess.Popen(
+        [install_sh], cwd=PROJ_DIR, start_new_session=True,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True,
+    )
+    sys.exit(0)
+
+
+_ensure_launchagent_uses_in_app_python()
+
 store = DeviceStore()
 actions.wire(store)
 
