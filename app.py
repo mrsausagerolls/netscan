@@ -39,8 +39,8 @@ from updater import check_for_update
 from version import GITHUB_REPO, __app_name__, __version__
 from wol import wake
 
-POLL_INTERVAL    = 5
-AUTO_RESCAN      = 5
+POLL_INTERVAL    = 5            # how often we re-check the SSID / scan timer
+AUTO_RESCAN      = 30           # full rescan cadence on a quiescent network
 ICON             = "📡"
 DASH_PORT        = 8765
 UPDATE_INTERVAL  = 6 * 60 * 60  # check GitHub Releases every 6 h
@@ -183,14 +183,26 @@ def _local_computer_name() -> str:
     return ""
 
 
+def _has_internal_battery() -> bool:
+    """True if this Mac has a built-in battery (i.e. it's a laptop)."""
+    try:
+        out = subprocess.run(
+            ["pmset", "-g", "batt"],
+            capture_output=True, text=True, timeout=2, check=False,
+        ).stdout
+        return "InternalBattery" in out
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
 def _local_mac_model() -> tuple[str, str]:
     """Return (device_type, vendor) for the running Mac.
 
     Wi-Fi MAC randomization (private addresses) means the OUI lookup yields
     nothing for the host running INS, and no fingerprint traffic is captured
     from self — so the generic classifier falls back to "unknown" for the
-    user's own machine. `sysctl hw.model` is the authoritative signal: pick
-    the right type from the model family.
+    user's own machine. `sysctl hw.model` + battery presence are the
+    authoritative signals.
     """
     try:
         model = subprocess.run(
@@ -199,13 +211,20 @@ def _local_mac_model() -> tuple[str, str]:
         ).stdout.strip()
     except (FileNotFoundError, subprocess.TimeoutExpired):
         model = ""
+    if not model:
+        return ("unknown", "")
     if model.startswith("MacBook"):
         return ("laptop", "Apple")
-    if model.startswith(("iMac", "Macmini", "MacPro", "MacStudio", "Mac1", "Mac14", "Mac15", "Mac16")):
-        # Apple silicon desktops report identifiers like "Mac14,3" (Mac mini)
-        # and "Mac15,4" (iMac) — keep the prefix list generous.
+    # Apple Silicon Macs all report unified "MacN,M" identifiers regardless of
+    # form factor (MacBook Air M2 = Mac14,2; Mac mini = Mac14,3), so the model
+    # prefix alone can't tell a laptop from a desktop — every M-series MacBook
+    # would otherwise be mislabeled "desktop". Battery presence is the reliable
+    # discriminator: only laptops have an internal battery.
+    if _has_internal_battery():
+        return ("laptop", "Apple")
+    if model.startswith(("iMac", "Macmini", "MacPro", "MacStudio", "Mac")):
         return ("desktop", "Apple")
-    return ("computer", "Apple") if model else ("unknown", "")
+    return ("computer", "Apple")
 
 
 class InsApp(rumps.App):
@@ -224,6 +243,12 @@ class InsApp(rumps.App):
         self._update_info: dict | None = None
         self._update_dirty       = False
         self._public_ip: str | None = None
+        # AppKit menu-bar mutations must happen on the main thread. Worker
+        # threads stage the desired title / status-item titles here; the
+        # _flush_pending main-thread timer applies them. See _set_title.
+        self._pending_title:  str | None = None
+        self._pending_status: tuple | None = None  # (status_title, scan_time_title)
+        self._last_scan_error: float = 0.0
 
         # Static menu items
         self._status    = rumps.MenuItem("Not connected")
@@ -268,6 +293,16 @@ class InsApp(rumps.App):
         threading.Thread(target=self._start_sniffer_when_ready, daemon=True).start()
         self._trigger_scan()
 
+    # ── Main-thread-safe menu-bar mutations ──────────────────────────────────
+
+    def _set_title(self, title: str):
+        """Stage a menu-bar title change for the main thread. Setting
+        self.title directly mutates an NSStatusItem (AppKit), which is undefined
+        behavior off the main thread — so every worker-thread title write goes
+        through here and is applied by _flush_pending."""
+        with self._lock:
+            self._pending_title = title
+
     # ── Menu helpers ─────────────────────────────────────────────────────────
 
     def _build_menu(self):
@@ -305,14 +340,23 @@ class InsApp(rumps.App):
             last    = self._last_scan
         enriched = []
         seen = store.all_seen
-        # Batch-fetch bandwidth once per state build instead of per device —
-        # one SQL query, then attach each device's recent samples below.
+        # Batch-fetch everything once per state build instead of issuing 3
+        # queries per device: bandwidth in one query, the known-device map once,
+        # and the WAN mappings once (grouped by internal IP). The per-device
+        # is_known/known_name/wan_mappings_for round-trips this replaces were the
+        # hot cost of /api/state, which rebuilds on every scan (~30s) per tab.
         bw_recent = store.bandwidth_recent(since_seconds=1800)
+        known_map = store.known                 # {mac: {name, added}}
+        wan_all   = store.wan_mappings()         # list incl. internal_ip
+        wan_by_ip: dict[str, list] = {}
+        for m in wan_all:
+            wan_by_ip.setdefault(m.get("internal_ip"), []).append(m)
         for d in sorted(devices, key=lambda x: tuple(int(p) for p in x["ip"].split("."))):
             rec = seen.get(d["mac"], {})
             fp_hints = rec.get("fingerprint", {})
             dtype = rec.get("device_type", "unknown")
             samples = bw_recent.get((d["mac"] or "").upper(), [])
+            kn = known_map.get(d["mac"])
             enriched.append({
                 "ip":              d["ip"],
                 "mac":             d["mac"],
@@ -322,15 +366,15 @@ class InsApp(rumps.App):
                 "latency":         d.get("latency"),
                 "ports":           rec.get("ports", []),
                 "first_seen":      rec.get("first_seen"),
-                "is_known":        store.is_known(d["mac"]),
-                "known_name":      store.known_name(d["mac"]),
+                "is_known":        kn is not None,
+                "known_name":      kn["name"] if kn else "",
                 "me":              d.get("me", False),
                 "device_type":     dtype,
                 "type_label":      classify.label(dtype),
                 "type_icon":       classify.icon(dtype),
                 "type_confidence": rec.get("type_confidence", 0.0),
                 "no_probe":        rec.get("no_probe", False),
-                "wan_exposed":     store.wan_mappings_for(d.get("ip", "")),
+                "wan_exposed":     wan_by_ip.get(d.get("ip", ""), []),
                 "bw_samples":      samples,  # [(ts, in, out), ...] last 30 min
             })
         # Triage queue = unknown, non-self devices, ordered newest first.
@@ -344,15 +388,17 @@ class InsApp(rumps.App):
             "public_ip":  self._public_ip or "",
             "count":      len(devices),
             "last_scan":  time.strftime("%H:%M:%S", time.localtime(last)) if last else "—",
+            "last_scan_epoch": last or 0,            # numeric, for staleness checks
+            "last_scan_error": self._last_scan_error, # epoch of last scan failure, 0 if none
             "devices":    enriched,
             "triage":     triage,
-            "known":      store.known,
+            "known":      known_map,
             "hook":       store.hook_script,
             "alerts":     store.alerts(limit=50),
             "unack_count": store.unack_alert_count(),
             "webhooks":   store.webhooks(),
             "health":     store.latest_health() or self._compute_and_store_health(enriched),
-            "wan_mappings": store.wan_mappings(),
+            "wan_mappings": wan_all,
             "settings": {
                 "voice_enabled":          store.get_setting("voice_enabled", "0") == "1",
                 "shortcut_on_new_device": store.get_setting("shortcut_on_new_device", ""),
@@ -388,6 +434,17 @@ class InsApp(rumps.App):
         with self._lock:
             pending = self._pending
             self._pending = None
+            title  = self._pending_title
+            self._pending_title = None
+            status = self._pending_status
+            self._pending_status = None
+        # Apply staged menu-bar mutations on the main thread. Title and status
+        # are applied independently of the device-tuple rebuild so a
+        # "not connected" state (no device tuple) still updates.
+        if title is not None:
+            self.title = title
+        if status is not None:
+            self._status.title, self._scan_time.title = status
         if pending:
             self._rebuild_menu(*pending)
 
@@ -416,9 +473,9 @@ class InsApp(rumps.App):
                 last       = self._last_scan
 
             if changed and not ssid:
-                self.title            = ICON
-                self._status.title    = "Not connected"
-                self._scan_time.title = "Last scan: —"
+                self._set_title(ICON)
+                with self._lock:
+                    self._pending_status = ("Not connected", "Last scan: —")
 
             if changed and ssid:
                 self._trigger_scan()
@@ -434,7 +491,7 @@ class InsApp(rumps.App):
             if self._scanning:
                 return
             self._scanning = True
-        self.title = f"{ICON} ···"
+        self._set_title(f"{ICON} ···")
         threading.Thread(target=self._run_scan, daemon=True).start()
 
     def _run_scan(self):
@@ -519,7 +576,7 @@ class InsApp(rumps.App):
             events.publish(events.SCAN_COMPLETED,
                            {"count": len(devices), "ssid": ssid or ""})
 
-            self.title = f"{ICON} {len(devices)}"
+            self._set_title(f"{ICON} {len(devices)}")
 
             # Port scan in background — doesn't block menu update
             threading.Thread(
@@ -528,8 +585,15 @@ class InsApp(rumps.App):
                 daemon=True,
             ).start()
 
-        except Exception as e:
-            self.title = f"{ICON} !"
+        except Exception:
+            # A recurring scan failure is otherwise invisible — just a silent
+            # "!" in the menu bar. Log the traceback to /tmp/ins.err and stamp
+            # the time so the dashboard can surface "scanning is broken".
+            import traceback
+            traceback.print_exc()
+            with self._lock:
+                self._last_scan_error = time.time()
+            self._set_title(f"{ICON} !")
         finally:
             with self._lock:
                 self._scanning = False

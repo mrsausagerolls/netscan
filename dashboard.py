@@ -17,11 +17,16 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from socketserver import ThreadingMixIn
+from urllib.parse import urlparse, parse_qs
 
 import events
 
 PORT = 8765
+
+# Reject bodies larger than this on POST — the dashboard only ever sends small
+# JSON control messages, so anything bigger is a mistake or abuse.
+MAX_BODY_BYTES = 1_048_576  # 1 MiB
 
 _HERE = Path(__file__).parent.resolve()
 _STATIC_DIR = _HERE / "static"
@@ -88,6 +93,7 @@ class _Handler(BaseHTTPRequestHandler):
     on_known_change = None # callable → triggers menu redraw
     on_rescan = None       # callable → triggers a fresh scan
     allowed_origins: set = set()  # populated in start()
+    allowed_hosts:   set = set()  # populated in start()
 
     # ── auth ──────────────────────────────────────────────────────────────
 
@@ -97,16 +103,43 @@ class _Handler(BaseHTTPRequestHandler):
             return False
         return any(origin == a or origin.startswith(a + "/") for a in self.allowed_origins)
 
+    def _host_ok(self) -> bool:
+        """Reject any request whose Host header isn't one of our loopback names.
+
+        This is the anti-DNS-rebinding gate. The server binds 127.0.0.1, but
+        without checking Host it would happily answer requests for *any*
+        hostname that resolves to loopback — letting a malicious page rebind
+        its own domain to 127.0.0.1 and then read /api/* responses same-origin.
+        A real browser hitting http://localhost:8765 always sends a Host that
+        includes the port, so the allowlist below is exact. Enforced on every
+        GET and POST before any routing or data access happens.
+        """
+        return self.headers.get("Host", "") in self.allowed_hosts
+
     # ── GET ───────────────────────────────────────────────────────────────
 
     def do_GET(self):
-        path = urlparse(self.path).path
+        if not self._host_ok():
+            self._send(403, "application/json", b'{"error":"forbidden host"}')
+            return
+
+        parsed = urlparse(self.path)
+        path = parsed.path
 
         if path == "/api/state":
             self._send(200, "application/json", json.dumps(self.get_state()).encode())
             return
         if path == "/api/history":
-            self._send(200, "application/json", json.dumps(self.store.history).encode())
+            # Optional ?limit=N returns only the most recent N scans so the
+            # dashboard doesn't ship the full (capped-at-5000) table on every
+            # poll. No limit → full history (back-compat).
+            qs = parse_qs(parsed.query)
+            try:
+                limit = int((qs.get("limit") or ["0"])[0])
+            except (ValueError, TypeError):
+                limit = 0
+            data = self.store.recent_scans(limit) if limit > 0 else self.store.history
+            self._send(200, "application/json", json.dumps(data).encode())
             return
         if path == "/api/alerts":
             self._send(200, "application/json", json.dumps(self.store.alerts(limit=200)).encode())
@@ -152,13 +185,27 @@ class _Handler(BaseHTTPRequestHandler):
     # ── POST ──────────────────────────────────────────────────────────────
 
     def do_POST(self):
+        if not self._host_ok():
+            self._send(403, "application/json", b'{"error":"forbidden host"}')
+            return
         if not self._origin_ok():
             self._send(403, "application/json", b'{"error":"forbidden origin"}')
             return
 
         path = urlparse(self.path).path
-        length = int(self.headers.get("Content-Length", 0))
-        body = json.loads(self.rfile.read(length) or b"{}")
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+        except (ValueError, TypeError):
+            self._send(400, "application/json", b'{"error":"bad content-length"}')
+            return
+        if length > MAX_BODY_BYTES:
+            self._send(413, "application/json", b'{"error":"body too large"}')
+            return
+        try:
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except (ValueError, TypeError):
+            self._send(400, "application/json", b'{"error":"invalid json body"}')
+            return
 
         if path == "/api/rescan":
             if self.on_rescan:
@@ -342,6 +389,16 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("X-Accel-Buffering", "no")
         self.end_headers()
 
+        # Bound each write so a wedged client (full TCP receive window, dead
+        # but un-reset socket) can't pin this daemon thread + fd forever. The
+        # timeout comfortably exceeds the 15s heartbeat, so a healthy idle
+        # connection never trips it; a stuck write raises socket.timeout
+        # (an OSError) which the loop's except handles via the finally cleanup.
+        try:
+            self.connection.settimeout(20)
+        except OSError:
+            pass
+
         q: queue.Queue = queue.Queue(maxsize=64)
         with _sse_lock:
             _sse_clients.append(q)
@@ -389,8 +446,6 @@ class _Server(HTTPServer):
     allow_reuse_port    = True
 
 
-from socketserver import ThreadingMixIn
-
 class _ThreadedServer(ThreadingMixIn, _Server):
     """Threaded server so /api/stream (SSE) connections don't block GET/POST
     requests. We override handle_error to drop the routine
@@ -400,7 +455,6 @@ class _ThreadedServer(ThreadingMixIn, _Server):
     daemon_threads = True
 
     def handle_error(self, request, client_address):
-        import sys
         exc = sys.exc_info()[1]
         if isinstance(exc, (ConnectionResetError, BrokenPipeError)):
             return
@@ -415,6 +469,10 @@ def start(store, get_state, on_known_change=None, on_rescan=None, port: int = PO
     _Handler.allowed_origins  = {
         f"http://127.0.0.1:{port}",
         f"http://localhost:{port}",
+    }
+    _Handler.allowed_hosts    = {
+        f"127.0.0.1:{port}",
+        f"localhost:{port}",
     }
 
     _wire_event_bus_once()

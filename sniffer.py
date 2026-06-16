@@ -44,6 +44,22 @@ from dataclasses import dataclass, field
 
 import events
 
+# scapy layer classes are imported once here (guarded) and reused for every
+# packet. _handle_packet is the hottest function in the codebase — re-running
+# the import machinery per packet is pure overhead. scapy is an optional native
+# dependency: when it's missing these stay None and _handle_packet early-returns
+# exactly as the old per-call import did, so `import sniffer` still works without
+# scapy (the test environment relies on this).
+try:
+    from scapy.layers.l2 import Ether            # type: ignore
+    from scapy.layers.inet import IP             # type: ignore
+    from scapy.layers.dns import DNS, DNSQR      # type: ignore
+    from scapy.layers.dhcp import DHCP, BOOTP    # type: ignore
+    _SCAPY_LAYERS = True
+except ImportError:
+    Ether = IP = DNS = DNSQR = DHCP = BOOTP = None  # type: ignore
+    _SCAPY_LAYERS = False
+
 
 # ── Status reporting ────────────────────────────────────────────────────────
 
@@ -114,12 +130,7 @@ def _snapshot_and_reset() -> dict[str, _Counters]:
 def _handle_packet(pkt, local_mac: str, threat_list, store) -> None:
     """Called once per captured packet. Must be fast — scapy queues are bounded
     and dropping packets here means bandwidth/DNS gaps."""
-    try:
-        from scapy.layers.l2 import Ether                # type: ignore
-        from scapy.layers.inet import IP                # type: ignore
-        from scapy.layers.dns import DNS, DNSQR         # type: ignore
-        from scapy.layers.dhcp import DHCP, BOOTP       # type: ignore
-    except ImportError:
+    if not _SCAPY_LAYERS:
         return
 
     if not pkt.haslayer(Ether):

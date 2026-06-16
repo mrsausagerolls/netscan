@@ -39,7 +39,7 @@ def _check_deps():
 
 _check_deps()
 
-from mac_vendor_lookup import MacLookup, VendorNotFoundError  # type: ignore
+from mac_vendor_lookup import MacLookup  # type: ignore
 from rich.console import Console
 from rich.live import Live
 from rich.table import Table
@@ -91,6 +91,27 @@ def _is_unicast(ip: str, mac: str) -> bool:
     if int(ip.split(".")[0]) >= 224:
         return False
     return True
+
+
+def _parse_arp_table(arp_output: str, only_ips: set[str] | None = None) -> dict[str, str]:
+    """Parse `arp -a` / `arp -an` output into an ordered {ip: mac} dict.
+
+    Skips incomplete entries and non-unicast addresses, normalizes MACs, and —
+    when `only_ips` is given — keeps only those IPs. First sighting per IP wins,
+    preserving arp-output order. Shared by fallback_scan and _arp_resolve so the
+    OS-output parser lives in one place.
+    """
+    by_ip: dict[str, str] = {}
+    for line in arp_output.splitlines():
+        m = re.search(r"\((\d+\.\d+\.\d+\.\d+)\) at ([0-9a-f:]+)", line)
+        if not m or "incomplete" in line:
+            continue
+        ip, mac = m.group(1), _normalize_mac(m.group(2))
+        if only_ips is not None and ip not in only_ips:
+            continue
+        if ip not in by_ip and _is_unicast(ip, mac):
+            by_ip[ip] = mac
+    return by_ip
 
 # ── Scanning ─────────────────────────────────────────────────────────────────
 
@@ -167,11 +188,17 @@ def _mdns_browse(iface_ip: str | None = None, timeout: float = 2.0) -> list[str]
     try:
         sock.sendto(query, (MCAST_GRP, MCAST_PORT))
         deadline = time.monotonic() + timeout
+        idle_deadline: float | None = None  # set once replies start arriving
         while time.monotonic() < deadline:
             try:
                 _, addr = sock.recvfrom(4096)
                 seen.add(addr[0])
+                # Replies are arriving — stop early after a short quiet gap
+                # instead of always burning the full timeout on a busy LAN.
+                idle_deadline = time.monotonic() + 0.6
             except socket.timeout:
+                if idle_deadline is not None and time.monotonic() >= idle_deadline:
+                    break
                 continue
             except OSError:
                 break
@@ -204,16 +231,7 @@ def _arp_resolve(ips: list[str]) -> list[dict]:
         list(ex.map(ping, ips))
 
     arp_out = subprocess.run(["arp", "-an"], capture_output=True, text=True).stdout
-
-    by_ip: dict[str, str] = {}
-    for line in arp_out.splitlines():
-        m = re.search(r"\((\d+\.\d+\.\d+\.\d+)\) at ([0-9a-f:]+)", line)
-        if not m or "incomplete" in line:
-            continue
-        ip, mac = m.group(1), _normalize_mac(m.group(2))
-        if ip in ips and _is_unicast(ip, mac):
-            by_ip[ip] = mac
-
+    by_ip = _parse_arp_table(arp_out, only_ips=set(ips))
     return [{"ip": ip, "mac": mac} for ip, mac in by_ip.items()]
 
 
@@ -229,23 +247,17 @@ def fallback_scan(network: str, quiet: bool = False) -> list[dict]:
         list(ex.map(ping, hosts))
 
     arp_out = subprocess.run(["arp", "-a"], capture_output=True, text=True).stdout
-    seen, devices = set(), []
-    for line in arp_out.splitlines():
-        m = re.search(r"\((\d+\.\d+\.\d+\.\d+)\) at ([0-9a-f:]+)", line)
-        if m and "incomplete" not in line:
-            ip = m.group(1)
-            mac = _normalize_mac(m.group(2))
-            if ip not in seen and _is_unicast(ip, mac):
-                seen.add(ip)
-                devices.append({"ip": ip, "mac": mac})
-    return devices
+    by_ip = _parse_arp_table(arp_out)
+    return [{"ip": ip, "mac": mac} for ip, mac in by_ip.items()]
 
 # ── Enrichment ───────────────────────────────────────────────────────────────
 
 def get_vendor(mac: str) -> str:
+    # Any lookup failure — unknown OUI, offline, malformed MAC — maps to the
+    # placeholder; vendor naming is best-effort and must never break a scan.
     try:
         return _mac_lookup.lookup(mac)
-    except (VendorNotFoundError, Exception):
+    except Exception:
         return "—"
 
 

@@ -1135,3 +1135,180 @@ def _fake_arp_run(cmd, *a, **kw):
         )
         return R()
     return R()
+
+
+# ── dashboard Host gate (anti-DNS-rebinding) ────────────────────────────────
+
+def test_host_check_accepts_local():
+    import dashboard
+    dashboard._Handler.allowed_hosts = {"127.0.0.1:8765", "localhost:8765"}
+    h = dashboard._Handler.__new__(dashboard._Handler)
+    h.headers = {"Host": "localhost:8765"}
+    assert h._host_ok()
+    h.headers = {"Host": "127.0.0.1:8765"}
+    assert h._host_ok()
+
+
+def test_host_check_rejects_foreign():
+    import dashboard
+    dashboard._Handler.allowed_hosts = {"127.0.0.1:8765", "localhost:8765"}
+    h = dashboard._Handler.__new__(dashboard._Handler)
+    for bad in ("evil.com", "evil.com:8765", "localhost:8765.evil.com", "127.0.0.1", ""):
+        h.headers = {"Host": bad}
+        assert not h._host_ok(), bad
+    h.headers = {}
+    assert not h._host_ok()
+
+
+# ── updater hardening ───────────────────────────────────────────────────────
+
+def test_check_for_update_honors_optout(monkeypatch):
+    import updater
+    monkeypatch.setenv("INS_NO_UPDATE_CHECK", "1")
+    with patch("updater.urllib.request.urlopen",
+               side_effect=AssertionError("network must not be touched when opted out")):
+        assert updater.check_for_update(current="2.0.0") is None
+
+
+def test_check_for_update_skips_prerelease():
+    import updater
+    fake = MagicMock()
+    fake.read.return_value = json.dumps({"tag_name": "v3.0.0-beta", "html_url": "x"}).encode()
+    fake.__enter__ = lambda self: self
+    fake.__exit__ = lambda *a: None
+    with patch("updater.urllib.request.urlopen", return_value=fake):
+        assert updater.check_for_update(current="2.0.0") is None
+
+
+def test_version_tuple_strips_prerelease_suffix():
+    from updater import _version_tuple
+    assert _version_tuple("v2.6.0-beta") == (2, 6, 0)
+    assert _version_tuple("2.6.0rc1") == (2, 6, 0)
+    assert _version_tuple("2.5.0+build7") == (2, 5, 0)
+
+
+def test_newer_is_length_insensitive():
+    from updater import _newer
+    assert _newer((2, 5, 1), (2, 5, 0)) is True
+    assert _newer((2, 5), (2, 5, 0)) is False       # "2.5" is NOT older than "2.5.0"
+    assert _newer((2, 6), (2, 5, 9)) is True
+
+
+# ── store migrations & schema parity ────────────────────────────────────────
+
+_PRE_MIGRATION_DEVICES_DDL = (
+    "CREATE TABLE devices ("
+    " mac TEXT PRIMARY KEY, first_seen REAL NOT NULL, last_seen REAL NOT NULL,"
+    " seen_count INTEGER NOT NULL DEFAULT 1, last_ip TEXT, hostname TEXT,"
+    " vendor TEXT, device_type TEXT, type_confidence REAL DEFAULT 0,"
+    " fingerprint TEXT, ports TEXT)"
+)
+
+
+def test_store_applies_table_migration_on_old_db(tmp_path):
+    import sqlite3, store
+    con = sqlite3.connect(str(tmp_path / "ins.db"))
+    con.execute(_PRE_MIGRATION_DEVICES_DDL)
+    con.commit(); con.close()
+    s = store.DeviceStore(data_dir=tmp_path)
+    cols = {r["name"] for r in s._q("PRAGMA table_info(devices)")}
+    assert "no_probe" in cols
+    # Idempotent: re-opening doesn't raise and the column is still present.
+    s2 = store.DeviceStore(data_dir=tmp_path)
+    cols2 = {r["name"] for r in s2._q("PRAGMA table_info(devices)")}
+    assert "no_probe" in cols2
+
+
+def test_store_schema_matches_migrations(tmp_path):
+    """A fresh _SCHEMA install and an old-schema + migrations upgrade must end
+    with identical devices columns, or upgrading users miss new columns."""
+    import sqlite3, store
+    fresh = store.DeviceStore(data_dir=tmp_path / "fresh")
+    fresh_cols = {r["name"] for r in fresh._q("PRAGMA table_info(devices)")}
+    old_dir = tmp_path / "old"; old_dir.mkdir()
+    con = sqlite3.connect(str(old_dir / "ins.db"))
+    con.execute(_PRE_MIGRATION_DEVICES_DDL)
+    con.commit(); con.close()
+    migrated = store.DeviceStore(data_dir=old_dir)
+    migrated_cols = {r["name"] for r in migrated._q("PRAGMA table_info(devices)")}
+    assert fresh_cols == migrated_cols
+
+
+def test_store_sightings_capped(tmp_path, monkeypatch):
+    import store
+    monkeypatch.setitem(store._MAX_ROWS, "sightings", 3)
+    s = store.DeviceStore(data_dir=tmp_path)
+    for i in range(6):
+        s.touch({"mac": "AA:BB:CC:DD:EE:FF", "ip": f"10.0.0.{i}", "latency": 1.0})
+    n = s._q("SELECT COUNT(*) AS n FROM sightings")[0]["n"]
+    assert n == 3
+
+
+def test_store_recent_scans_bounded(tmp_path):
+    import store
+    s = store.DeviceStore(data_dir=tmp_path)
+    for i in range(10):
+        s.record_scan(i, "Net")
+    recent = s.recent_scans(limit=3)
+    assert len(recent) == 3
+    assert [r["count"] for r in recent] == [7, 8, 9]   # oldest-first within the window
+
+
+def test_store_latest_health_includes_band(tmp_path):
+    import store
+    s = store.DeviceStore(data_dir=tmp_path)
+    s.record_health(58, [{"weight": 35, "label": "rogue dhcp"}])
+    snap = s.latest_health()
+    assert snap["score"] == 58
+    assert snap["band"] == "fair"
+    assert snap["headline"]
+
+
+# ── security rules: default creds & camera-HTTPS ────────────────────────────
+
+def test_security_default_creds_flags_hikvision_with_web_panel():
+    import security
+    dev = {"vendor": "Hikvision Digital", "device_type": "camera",
+           "ports": [80], "ip": "192.168.1.5", "mac": "AA:BB:CC:00:00:01"}
+    a = security.check_default_creds(dev)
+    assert a is not None and a.severity == "warning" and "12345" in a.message
+    assert security.check_default_creds({**dev, "ports": []}) is None
+
+
+def test_security_camera_http_only_warns():
+    import security
+    dev = {"device_type": "camera", "ports": [80], "ip": "192.168.1.6",
+           "mac": "AA:BB:CC:00:00:02"}
+    a = security.check_admin_panel_for_camera(dev)
+    assert a is not None and a.kind == "camera_no_https"
+    assert security.check_admin_panel_for_camera({**dev, "ports": [80, 443]}) is None
+
+
+# ── igd protocol whitelist ──────────────────────────────────────────────────
+
+def test_igd_parse_mapping_whitelists_protocol():
+    import igd
+    def xml(proto):
+        return ("<root><NewExternalPort>8443</NewExternalPort>"
+                "<NewInternalClient>192.168.1.40</NewInternalClient>"
+                "<NewInternalPort>443</NewInternalPort>"
+                f"<NewProtocol>{proto}</NewProtocol>"
+                "<NewEnabled>1</NewEnabled></root>").encode()
+    assert igd._parse_mapping(xml("udp")).protocol == "UDP"
+    assert igd._parse_mapping(xml("TCP")).protocol == "TCP"
+    # Untrusted / markup-laden value is neutralized to TCP, never rendered raw.
+    assert igd._parse_mapping(xml('x&quot;&gt;y')).protocol == "TCP"
+
+
+# ── health unknown-device penalty scales with count ─────────────────────────
+
+def test_health_unknown_penalty_scales_with_count():
+    import health
+    def devs(n):
+        return [{"is_known": False, "me": False, "ports": [], "vendor": "",
+                 "device_type": "unknown", "ip": f"10.0.0.{i}"} for i in range(n)]
+    one  = health.compute(devices=devs(1),  unack_alerts=[], wan_mappings=[], dhcp_servers=[])
+    five = health.compute(devices=devs(5),  unack_alerts=[], wan_mappings=[], dhcp_servers=[])
+    fifty = health.compute(devices=devs(50), unack_alerts=[], wan_mappings=[], dhcp_servers=[])
+    assert five["score"] < one["score"]        # scales with count
+    assert fifty["score"] == five["score"]     # capped at the soft cap (20)

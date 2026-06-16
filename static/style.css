@@ -5,7 +5,33 @@
    ID contracts intact so app.js keeps working.
    ───────────────────────────────────────────────────────────────────────── */
 
+/* Self-hosted fonts — bundled under static/fonts/ so the dashboard makes ZERO
+   outbound calls (was loading these from Google's CDN, which leaked the user's
+   IP to Google on every open and broke the look offline — both at odds with the
+   local-only, no-telemetry promise). Variable woff2, weight axis 400–700. */
+@font-face{
+  font-family:'Geist';
+  src:url('/static/fonts/geist-latin-wght-normal.woff2') format('woff2');
+  font-weight:400 700;font-style:normal;font-display:swap;
+}
+@font-face{
+  font-family:'Geist Mono';
+  src:url('/static/fonts/geist-mono-latin-wght-normal.woff2') format('woff2');
+  font-weight:400 700;font-style:normal;font-display:swap;
+}
+@font-face{
+  font-family:'JetBrains Mono';
+  src:url('/static/fonts/jetbrains-mono-latin-wght-normal.woff2') format('woff2');
+  font-weight:400 700;font-style:normal;font-display:swap;
+}
+
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+/* Visually hidden but available to screen readers. */
+.sr-only{
+  position:absolute;width:1px;height:1px;padding:0;margin:-1px;
+  overflow:hidden;clip:rect(0,0,0,0);clip-path:inset(50%);white-space:nowrap;border:0;
+}
 
 :root{
   /* ── Canvas & surfaces ──────────────────────────────────────────────── */
@@ -25,7 +51,10 @@
   /* ── Text ────────────────────────────────────────────────────────────── */
   --text:    #ECEEF2;
   --text-2:  #A6ADBA;
-  --text-3:  #6E7685;
+  /* --text-3 carries real content (scan/alert timestamps, MAC column), so it's
+     kept above the WCAG AA 4.5:1 floor on the dark surfaces. --text-4 is used
+     only for the decorative footer dot separators. */
+  --text-3:  #8A92A1;
   --text-4:  #4A515E;
 
   /* Legacy aliases (kept so existing rules don't break) */
@@ -221,6 +250,14 @@ header::after{
 }
 .scantime{font-family:var(--mono);font-size:10px;color:var(--text-3);letter-spacing:.02em}
 
+/* Live pill reflects the live-update connection. Default = green "live"; amber
+   when the last scan is stale; red when the live stream is offline. The dot
+   stops pulsing in the non-live states so a stuck connection can't look live. */
+.live-pill.is-stale{background:var(--warn-soft);border-color:var(--warn-line);color:var(--warn)}
+.live-pill.is-stale .live-dot{background:var(--warn);animation:none}
+.live-pill.is-offline{background:var(--danger-soft);border-color:var(--danger-line);color:var(--danger)}
+.live-pill.is-offline .live-dot{background:var(--danger);animation:none}
+
 /* ── MAIN / TABS ──────────────────────────────────────────────────────── */
 main{flex:1;overflow:hidden;display:flex;flex-direction:column}
 .tab{flex:1;overflow-y:auto;display:flex;flex-direction:column;scroll-behavior:smooth}
@@ -303,6 +340,13 @@ main{flex:1;overflow:hidden;display:flex;flex-direction:column}
 .device-card.is-identifying{
   border-color:rgba(126,135,154,.18);
   background:linear-gradient(180deg, var(--muted-soft) 0%, var(--surface) 80%);
+}
+
+/* Keyboard focus for the clickable card/row (they open the device story). */
+.device-card:focus-visible,
+.dl-row:focus-visible{
+  outline:none;border-color:var(--accent-strong);
+  box-shadow:var(--ring);
 }
 
 .dc-head{display:flex;align-items:center;gap:11px;position:relative;z-index:1}
@@ -398,7 +442,7 @@ main{flex:1;overflow:hidden;display:flex;flex-direction:column}
 }
 .btn-danger:hover{background:rgba(248,114,128,.18);border-color:rgba(248,114,128,.45)}
 
-.btn-tiny{padding:4px 9px;font-size:10.5px}
+.btn-tiny{padding:4px 9px;font-size:10.5px;min-height:26px}
 .filters-right{display:flex;gap:8px;align-items:center}
 
 /* ── Alerts ───────────────────────────────────────────────────────────── */
@@ -930,7 +974,7 @@ textarea#hook-script:focus{border-color:var(--accent-line);box-shadow:var(--ring
 }
 .vtbtn{
   background:transparent;border:0;color:var(--text-3);cursor:pointer;
-  width:28px;height:24px;display:inline-flex;align-items:center;justify-content:center;
+  width:32px;height:28px;display:inline-flex;align-items:center;justify-content:center;
   border-radius:5px;padding:0;
   transition:color .12s var(--ease), background .12s var(--ease);
 }
@@ -1083,4 +1127,28 @@ textarea#hook-script:focus{border-color:var(--accent-line);box-shadow:var(--ring
   .triage-row .triage-name{grid-column:1 / -1;max-width:none}
   .triage-row .btn{grid-column:auto}
   .webhook-form{grid-template-columns:1fr;gap:8px}
+}
+@media (max-width: 720px){
+  /* Let the tab strip scroll horizontally instead of clipping unreachable
+     tabs. justify-content:flex-start so the first tab can't fall off the left
+     edge of an overflow-scroll container. */
+  .hnav-bar{justify-content:flex-start;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .hnav{flex-wrap:nowrap}
+  /* Drop secondary header stats so the header stays a single tidy row;
+     Network / Devices / Alerts remain. */
+  .hstat-opt{display:none}
+}
+
+/* ── Reduced motion ──────────────────────────────────────────────────────
+   Honor the OS "Reduce Motion" setting (common on macOS, the only platform
+   this ships to): neutralize the looping pulses and one-shot entrance
+   animations. No effect for users who haven't enabled it. */
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{
+    animation-duration:.001ms !important;
+    animation-iteration-count:1 !important;
+    transition-duration:.001ms !important;
+    scroll-behavior:auto !important;
+  }
+  .live-dot,.dc-status.s-identifying{animation:none}
 }

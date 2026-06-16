@@ -125,8 +125,19 @@ def compute(devices: list[dict], unack_alerts: list[dict],
                      f"{d.get('vendor', '?')} device at {d.get('ip')} likely on default password")
 
     if unknown:
-        penalize("unknown_device",
-                 f"{unknown} unknown device{'s' if unknown != 1 else ''} on the network")
+        # Scale with the count (up to the soft cap) instead of a flat single
+        # hit, so 10 unknown devices read worse than 1. Done as one aggregate
+        # reason rather than per-device penalize() calls to keep the dashboard
+        # top-reasons list uncluttered.
+        per, cap = _PENALTIES["unknown_device"]
+        weight = min(per * unknown, cap)
+        if weight > 0:
+            bucket_totals["unknown_device"] = weight
+            reasons.append({
+                "weight": weight,
+                "label": f"{unknown} unknown device{'s' if unknown != 1 else ''} on the network",
+                "key": "unknown_device",
+            })
 
     # Unacknowledged alert pressure.
     crit = sum(1 for a in unack_alerts if a.get("severity") == "critical")

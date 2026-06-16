@@ -45,18 +45,6 @@ _RISKY_PORTS: dict[int, tuple[str, str, str]] = {
             "Open proxy — can be used by anyone in your LAN to bounce traffic through this device."),
 }
 
-# Ports where leaving them open IS fine but you should know it's there.
-_NOTABLE_PORTS: dict[int, str] = {
-    22:   "SSH (encrypted remote login)",
-    80:   "Web admin page",
-    443:  "Web admin page (HTTPS)",
-    445:  "Windows file sharing",
-    9100: "Printer (raw print)",
-    554:  "Camera (RTSP stream)",
-    8080: "Web admin page (alt port)",
-}
-
-
 # ── Data model ──────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)

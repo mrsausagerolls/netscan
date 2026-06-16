@@ -31,7 +31,7 @@ struct Device: Decodable, Identifiable, Hashable {
 }
 
 struct Alert: Decodable, Identifiable, Hashable {
-    var id: Int { idFallback ?? Int(ts ?? 0) ?? 0 }
+    var id: Int { idFallback ?? Int(ts ?? 0) }
     let idFallback: Int?
     let ts: Double?
     let kind: String?

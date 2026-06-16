@@ -70,13 +70,20 @@ let STATE   = null;
 let HISTORY = [];
 let CURRENT_TAB = location.hash.replace("#", "") || "overview";
 
+// Element focused before an overlay opened, so focus can be returned on close.
+let _lastFocus = null;
+function _restoreFocus() {
+  if (_lastFocus && typeof _lastFocus.focus === "function") _lastFocus.focus();
+  _lastFocus = null;
+}
+
 // ── tab switching ─────────────────────────────────────────────────────────
 function showTab(name) {
   CURRENT_TAB = name;
   history.replaceState(null, "", `#${name}`);
   $$(".navbtn").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
   $$(".tab").forEach(t => t.hidden = t.id !== `tab-${name}`);
-  if (name === "history") drawHistory();
+  if (name === "history") loadHistory();
 }
 $$(".navbtn").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
 
@@ -94,12 +101,10 @@ const escHtml = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
 // ── refresh loop ──────────────────────────────────────────────────────────
 async function refresh() {
   try {
-    const [state, hist] = await Promise.all([
-      fetch("/api/state").then(r => r.json()),
-      fetch("/api/history").then(r => r.json()),
-    ]);
-    STATE   = state;
-    HISTORY = hist;
+    // Only /api/state on the hot path. The (up-to-5000-row) scan history is
+    // fetched lazily by loadHistory() when the History tab is actually shown,
+    // not on every scan tick.
+    STATE = await fetch("/api/state").then(r => r.json());
     paintHeader();
     paintHealth();
     paintOverview();
@@ -110,8 +115,26 @@ async function refresh() {
     paintKnown();
     paintWebhooks();
     paintHook();
-    if (CURRENT_TAB === "history") drawHistory();
+    updateLivePill();
+    if (CURRENT_TAB === "history") loadHistory();
   } catch (e) { /* network blip; try again next tick */ }
+}
+
+// Coalesce bursty SSE events (one scan can fire scan.completed + several
+// device.* events) into a single repaint so we don't run the full painter
+// chain N+1 times per scan.
+let _refreshTimer = null;
+function refreshSoon() {
+  if (_refreshTimer) return;
+  _refreshTimer = setTimeout(() => { _refreshTimer = null; refresh(); }, 300);
+}
+
+// Fetch a bounded recent window of scan history, then redraw the chart.
+async function loadHistory() {
+  try {
+    HISTORY = await fetch("/api/history?limit=500").then(r => r.json());
+  } catch (e) { /* keep whatever we had */ }
+  drawHistory();
 }
 
 // ── header ────────────────────────────────────────────────────────────────
@@ -273,6 +296,8 @@ function applyListSortIndicators() {
     const active = el.dataset.sort === LIST_SORT.key;
     el.classList.toggle("active", active);
     el.dataset.dir = active ? LIST_SORT.dir : "";
+    el.setAttribute("aria-sort",
+      active ? (LIST_SORT.dir === "asc" ? "ascending" : "descending") : "none");
   });
 }
 
@@ -409,8 +434,17 @@ function paintDevicesList(visible) {
       onDeviceAction(e);
     });
   });
-  body.querySelectorAll("[data-row-mac]").forEach(row =>
-    row.addEventListener("click", () => openDeviceStory(row.dataset.rowMac)));
+  body.querySelectorAll("[data-row-mac]").forEach(row => {
+    row.addEventListener("click", () => openDeviceStory(row.dataset.rowMac));
+    row.addEventListener("keydown", (e) => {
+      // Only when focus is on the row itself, not an inner action button.
+      if ((e.key === "Enter" || e.key === " ") &&
+          !e.target.closest("[data-action], button, input, select")) {
+        e.preventDefault();
+        openDeviceStory(row.dataset.rowMac);
+      }
+    });
+  });
 }
 
 function deviceListRow(d) {
@@ -427,7 +461,7 @@ function deviceListRow(d) {
       ? `<button class="btn btn-tiny btn-danger" data-action="unknown" data-mac="${escHtml(d.mac)}">Unknown</button>`
       : `<button class="btn btn-tiny btn-primary" data-action="known" data-mac="${escHtml(d.mac)}" data-name="${escHtml(name)}">Mark Known</button>`;
   return `
-    <div class="dl-row" data-row-mac="${escHtml(d.mac)}">
+    <div class="dl-row" data-row-mac="${escHtml(d.mac)}" tabindex="0" aria-label="View details for ${escHtml(name)}">
       <div class="dl-c dl-c-status"><span class="dc-status ${dotKlass}"></span></div>
       <div class="dl-c dl-c-icon">${escHtml(d.type_icon || "❔")}</div>
       <div class="dl-c dl-c-name">${escHtml(name)}</div>
@@ -483,7 +517,7 @@ function deviceCard(d) {
   if (d.fingerprint)                meta.push(`<dt>Identity</dt><dd>${escHtml(d.fingerprint)}</dd>`);
   if (d.first_seen)                 meta.push(`<dt>First seen</dt><dd>${escHtml(timeAgo(d.first_seen))}</dd>`);
   if ((d.wan_exposed || []).length) {
-    meta.push(`<dt>WAN exposed</dt><dd class="warn">${(d.wan_exposed || []).map(m => `:${m.external_port}/${m.protocol}`).join(" ")}</dd>`);
+    meta.push(`<dt>WAN exposed</dt><dd class="warn">${(d.wan_exposed || []).map(m => `:${escHtml(m.external_port)}/${escHtml(m.protocol)}`).join(" ")}</dd>`);
   }
 
   const probeToggle = d.me ? "" : `
@@ -501,7 +535,7 @@ function deviceCard(d) {
     </div>`;
 
   return `
-    <article class="device-card ${klass}">
+    <article class="device-card ${klass}" tabindex="0" aria-label="View details for ${escHtml(mainName || d.ip || "device")}">
       <div class="dc-head">
         <div class="dc-typeicon">${escHtml(d.type_icon || "❔")}</div>
         <div class="dc-name">
@@ -540,6 +574,12 @@ async function onDeviceAction(e) {
 // ── triage ────────────────────────────────────────────────────────────────
 function paintTriage() {
   const list = $("#triage-list");
+  // Don't rebuild the list out from under someone typing a device name — the
+  // ~30s scan cadence would otherwise wipe a half-typed entry. Scoped to the
+  // name INPUT specifically: guarding the whole list would also suppress the
+  // post-action repaint when an action button is focused (Chromium focuses
+  // buttons on click), leaving a just-actioned device visibly stuck.
+  if (document.activeElement && document.activeElement.matches("#triage-list .triage-name")) return;
   const items = STATE.triage || [];
   if (!items.length) {
     list.innerHTML = `<div class="empty">Nothing to triage — every device is marked as known.</div>`;
@@ -555,7 +595,7 @@ function paintTriage() {
           <div class="triage-sub">${escHtml(d.ip)} · ${escHtml(d.mac)} · first seen ${escHtml(timeAgo(d.first_seen || 0))}</div>
           ${d.fingerprint ? `<div class="triage-fp">${escHtml(d.fingerprint)}</div>` : ""}
         </div>
-        <input type="text" class="triage-name" placeholder="Name this device" value="${escHtml(suggested)}">
+        <input type="text" class="triage-name" aria-label="Device name" placeholder="Name this device" value="${escHtml(suggested)}">
         <button class="btn btn-primary" data-triage-act="known">Mark Known</button>
         <button class="btn btn-danger"  data-triage-act="block">Block / Ignore</button>
       </div>`;
@@ -648,6 +688,7 @@ $("#ack-all").addEventListener("click", async () => {
 function openExplainer(kind) {
   const help = ALERT_HELP.find(([prefix]) => kind.startsWith(prefix))?.[1];
   if (!help) return;
+  _lastFocus = document.activeElement;
   $("#drawer-title").textContent = help.title;
   $("#drawer-body").innerHTML = `
     <h3>Why this matters</h3>
@@ -657,10 +698,12 @@ function openExplainer(kind) {
   `;
   $("#alert-drawer").hidden = false;
   $("#drawer-scrim").hidden = false;
+  $("#drawer-close").focus();
 }
 function closeExplainer() {
   $("#alert-drawer").hidden = true;
   $("#drawer-scrim").hidden = true;
+  _restoreFocus();
 }
 $("#drawer-close").addEventListener("click", closeExplainer);
 $("#drawer-scrim").addEventListener("click", closeExplainer);
@@ -806,9 +849,11 @@ function timeAgo(tsSeconds) {
 
 // ── device story drawer ──────────────────────────────────────────────────
 async function openDeviceStory(mac) {
+  const opener = document.activeElement;
   try {
     const story = await fetch(`/api/device/${encodeURIComponent(mac)}`).then(r => r.json());
     if (!story || story.error) return;
+    _lastFocus = opener;
     const d = story.device || {};
     const name = story.known_name || d.hostname || d.vendor || mac;
     $("#device-drawer-title").textContent = name;
@@ -877,6 +922,7 @@ async function openDeviceStory(mac) {
 
     $("#device-drawer").hidden = false;
     $("#drawer-scrim").hidden = false;
+    $("#device-drawer-close").focus();
 
     const wireRouter = (sel, path, verb) =>
       document.getElementById(sel)?.addEventListener("click", async (e) => {
@@ -937,17 +983,32 @@ function renderDnsBlock(queries) {
 function closeDeviceDrawer() {
   $("#device-drawer").hidden = true;
   if ($("#alert-drawer").hidden) $("#drawer-scrim").hidden = true;
+  _restoreFocus();
 }
 $("#device-drawer-close").addEventListener("click", closeDeviceDrawer);
 $("#drawer-scrim").addEventListener("click", closeDeviceDrawer);
 
 // Click anywhere on a device card (outside its buttons) to open the story.
+function _macFromCard(card) {
+  return card.querySelector("[data-mac]")?.dataset.mac
+       || card.querySelector(".dc-name-sub")?.textContent.match(/[0-9A-F:]{17}/)?.[0];
+}
 $("#device-grid").addEventListener("click", (e) => {
   if (e.target.closest("[data-action], button, input, select")) return;
   const card = e.target.closest(".device-card");
   if (!card) return;
-  const mac = card.querySelector("[data-mac]")?.dataset.mac
-            || card.querySelector(".dc-name-sub")?.textContent.match(/[0-9A-F:]{17}/)?.[0];
+  const mac = _macFromCard(card);
+  if (mac) openDeviceStory(mac);
+});
+// Keyboard: Enter/Space on a focused card opens the story (cards are
+// tabindex=0). The guard skips inner action buttons, which handle themselves.
+$("#device-grid").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  if (e.target.closest("[data-action], button, input, select")) return;
+  const card = e.target.closest(".device-card");
+  if (!card) return;
+  e.preventDefault();
+  const mac = _macFromCard(card);
   if (mac) openDeviceStory(mac);
 });
 
@@ -1105,21 +1166,45 @@ paintHook = function() { _origPaintHook(); paintSettings(); };
 // instead of waiting on the polling tick. We KEEP a 30s polling fallback in
 // case the SSE connection drops (corporate proxies sometimes kill long
 // HTTP requests after a minute or two).
+let SSE_STATE = "connecting";   // "live" | "offline"
+
 function startSSE() {
   if (typeof EventSource === "undefined") return;
   try {
     const es = new EventSource("/api/stream");
-    const onEvent = () => refresh();
+    const onEvent = () => refreshSoon();
     es.addEventListener("scan.completed", onEvent);
     es.addEventListener("alert.raised",   onEvent);
     es.addEventListener("device.joined",  onEvent);
     es.addEventListener("device.left",    onEvent);
     es.addEventListener("device.ports_changed", onEvent);
     es.addEventListener("device.vendor_changed", onEvent);
+    es.onopen = () => { SSE_STATE = "live"; updateLivePill(); };
     es.onerror = () => {
-      // Browser auto-retries; we don't need to do anything here.
+      // EventSource auto-retries transient drops (readyState CONNECTING). Only
+      // surface "offline" once it has actually given up (CLOSED), so the pill
+      // doesn't flicker amber on every routine reconnect.
+      if (es.readyState === EventSource.CLOSED) { SSE_STATE = "offline"; updateLivePill(); }
     };
   } catch (e) { /* SSE not available; polling fallback covers it */ }
+}
+
+// Reflect live-update health in the header pill: green "live" by default,
+// amber "stale" when the last scan is older than expected, red "offline" when
+// the event stream has dropped. Purely client-side — no new network calls.
+function updateLivePill() {
+  const pill = document.querySelector(".live-pill");
+  if (!pill) return;
+  let cls = "", label = "live";
+  if (SSE_STATE === "offline") {
+    cls = "is-offline"; label = "offline";
+  } else if (STATE && STATE.last_scan_epoch) {
+    const age = Date.now() / 1000 - STATE.last_scan_epoch;
+    if (age > 120) { cls = "is-stale"; label = "stale"; }
+  }
+  pill.classList.toggle("is-stale",   cls === "is-stale");
+  pill.classList.toggle("is-offline", cls === "is-offline");
+  if (pill.lastChild) pill.lastChild.textContent = " " + label;
 }
 
 // ── Wi-Fi neighbor survey ────────────────────────────────────────────────
@@ -1207,6 +1292,15 @@ if (rescanBtn) {
   });
 }
 
+// Escape closes the topmost open overlay (onboarding > device drawer > alert
+// drawer), the standard expected affordance for keyboard users.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!$("#onboarding").hidden)      { finishTour(); return; }
+  if (!$("#device-drawer").hidden)   { closeDeviceDrawer(); return; }
+  if (!$("#alert-drawer").hidden)    { closeExplainer(); return; }
+});
+
 // ── boot ──────────────────────────────────────────────────────────────────
 showTab(CURRENT_TAB);
 setDevicesView(DEVICE_VIEW);   // honor persisted preference; sync toggle UI
@@ -1214,3 +1308,6 @@ refresh().then(showOnboardingIfNeeded);
 startSSE();
 // Fallback polling — far less frequent now that SSE pushes deltas instantly.
 setInterval(refresh, 30000);
+// Refresh the live/stale pill on its own cadence so staleness shows even when
+// no scan events are arriving.
+setInterval(updateLivePill, 15000);

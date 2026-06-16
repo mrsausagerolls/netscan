@@ -6,3 +6,10 @@
 <array>
     <string>_ins._tcp</string>
 </array>
+
+<!-- The dashboard is served over plain HTTP on the LAN. App Transport Security blocks cleartext loads by default, so without this exception every request to http://<mac>:8765 fails and the app can never connect. NSAllowsLocalNetworking permits cleartext only to local-network hosts (RFC1918 / .local) without weakening ATS for the public internet. -->
+<key>NSAppTransportSecurity</key>
+<dict>
+    <key>NSAllowsLocalNetworking</key>
+    <true/>
+</dict>

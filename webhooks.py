@@ -125,12 +125,11 @@ def _flavor_for(url: str):
     if "api.pushover.net" in host:
         return _pushover_payload, "application/x-www-form-urlencoded", \
                "https://api.pushover.net/1/messages.json"
-    if "ntfy.sh" in host or "/ntfy/" in parsed.path or parsed.path.count("/") == 1:
-        # ntfy.sh/<topic> or self-hosted ntfy on any host with a single-segment
-        # path is the typical shape. We're conservative — if unsure, fall through
-        # to generic.
-        if "ntfy" in host:
-            return _ntfy_payload, "application/json", url
+    # Detect ntfy by 'ntfy' in the host (ntfy.sh or a self-hosted ntfy.* host).
+    # We don't guess from path shape — a single-segment path matches almost any
+    # webhook URL (Slack/Discord/generic), so guessing would misclassify them.
+    if "ntfy" in host:
+        return _ntfy_payload, "application/json", url
     return _generic_payload, "application/json", url
 
 

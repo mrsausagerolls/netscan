@@ -4,9 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Inglorious Network Scanner</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -32,11 +29,11 @@
     <div class="hstat-l">Network</div>
     <div class="hstat-v" id="hdr-ssid">—</div>
   </div>
-  <div class="hstat">
+  <div class="hstat hstat-opt">
     <div class="hstat-l">CIDR</div>
     <div class="hstat-v" id="hdr-net">—</div>
   </div>
-  <div class="hstat" title="Public IPv4 reported by the router via UPnP. All devices on this LAN share this one address — NAT means individual external IPs don't exist for IPv4.">
+  <div class="hstat hstat-opt" title="Public IPv4 reported by the router via UPnP. All devices on this LAN share this one address — NAT means individual external IPs don't exist for IPv4.">
     <div class="hstat-l">Public IP</div>
     <div class="hstat-v" id="hdr-public-ip">—</div>
   </div>
@@ -113,11 +110,11 @@
   <section class="tab" id="tab-devices" hidden>
     <div class="pbar">
       <div class="filters">
-        <input type="search" id="dev-search" placeholder="Search IP, MAC, hostname, vendor…">
-        <select id="dev-type-filter">
+        <input type="search" id="dev-search" aria-label="Search devices by IP, MAC, hostname, or vendor" placeholder="Search IP, MAC, hostname, vendor…">
+        <select id="dev-type-filter" aria-label="Filter by device type">
           <option value="">All types</option>
         </select>
-        <select id="dev-known-filter">
+        <select id="dev-known-filter" aria-label="Filter by known status">
           <option value="all">All devices</option>
           <option value="known">Known only</option>
           <option value="unknown">Unknown only</option>
@@ -242,9 +239,9 @@
         from the dropdown or just paste the webhook URL.
       </p>
       <div class="webhook-form">
-        <input type="text" id="wh-label" placeholder="Label (e.g. 'Home Discord')">
-        <input type="url" id="wh-url" placeholder="https://discord.com/api/webhooks/...">
-        <select id="wh-severity">
+        <input type="text" id="wh-label" aria-label="Webhook label" placeholder="Label (e.g. 'Home Discord')">
+        <input type="url" id="wh-url" aria-label="Webhook URL" placeholder="https://discord.com/api/webhooks/...">
+        <select id="wh-severity" aria-label="Webhook minimum severity">
           <option value="info">All alerts</option>
           <option value="warning">Warnings &amp; criticals only</option>
           <option value="critical">Critical only</option>
@@ -376,7 +373,7 @@
 </main>
 
 <!-- Slide-over for per-device "story" view. -->
-<aside class="drawer drawer-wide" id="device-drawer" hidden>
+<aside class="drawer drawer-wide" id="device-drawer" role="dialog" aria-modal="true" aria-labelledby="device-drawer-title" hidden>
   <div class="drawer-head">
     <div class="drawer-title" id="device-drawer-title">Device</div>
     <button class="btn btn-ghost" id="device-drawer-close">Close</button>
@@ -385,7 +382,7 @@
 </aside>
 
 <!-- First-launch onboarding overlay -->
-<div class="onboarding" id="onboarding" hidden>
+<div class="onboarding" id="onboarding" role="dialog" aria-modal="true" aria-label="Welcome tour" hidden>
   <div class="onboarding-card">
     <div class="onboarding-step" id="onboarding-step"></div>
     <div class="onboarding-actions">
@@ -397,7 +394,7 @@
 </div>
 
 <!-- Slide-over for "what does this mean" alert help. -->
-<aside class="drawer" id="alert-drawer" hidden>
+<aside class="drawer" id="alert-drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" hidden>
   <div class="drawer-head">
     <div class="drawer-title" id="drawer-title">Alert</div>
     <button class="btn btn-ghost" id="drawer-close">Close</button>

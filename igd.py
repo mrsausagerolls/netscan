@@ -106,16 +106,33 @@ def _parse_device_xml(location: str) -> dict | None:
     parsed = urllib.parse.urlparse(location)
     urlbase = f"{parsed.scheme}://{parsed.netloc}"
 
-    # The XML uses an internal namespace; strip it for simpler iteration.
-    text = re.sub(rb'\sxmlns="[^"]+"', b"", body, count=1)
+    # Match by local element name rather than stripping namespaces with a
+    # regex. Many UPnP stacks redeclare a default xmlns on nested elements
+    # (or use a namespace prefix), which a single `count=1` strip misses —
+    # silently finding zero <service> elements and disabling WAN-exposure
+    # detection. The local-name approach mirrors _parse_mapping/get_external_ip
+    # and tolerates all of those shapes.
     try:
-        root = ElementTree.fromstring(text)
+        root = ElementTree.fromstring(body)
     except ElementTree.ParseError:
         return None
 
-    for svc in root.iter("service"):
-        st = (svc.findtext("serviceType") or "").strip()
-        ctrl = (svc.findtext("controlURL") or "").strip()
+    def _local(tag: str) -> str:
+        return tag.rsplit("}", 1)[-1]
+
+    def _child_text(svc, name: str) -> str:
+        # Scoped to this service's subtree so sibling <service> elements with
+        # identical child tags don't cross-contaminate.
+        for el in svc.iter():
+            if _local(el.tag) == name and el.text:
+                return el.text.strip()
+        return ""
+
+    for svc in root.iter():
+        if _local(svc.tag) != "service":
+            continue
+        st = _child_text(svc, "serviceType")
+        ctrl = _child_text(svc, "controlURL")
         if "WANIPConnection" in st or "WANPPPConnection" in st:
             if not ctrl:
                 continue
@@ -231,12 +248,19 @@ def _parse_mapping(xml: bytes) -> Mapping | None:
     ext = find("NewExternalPort")
     if not ext:
         return None
+    # Whitelist protocol to TCP/UDP at the parse boundary. NewProtocol is a raw
+    # string from the router's SOAP response; a rogue/lax IGD could return
+    # markup here, and it's later rendered in the dashboard — never let an
+    # untrusted protocol string past this point.
+    proto = (find("NewProtocol") or "TCP").upper()
+    if proto not in ("TCP", "UDP"):
+        proto = "TCP"
     try:
         return Mapping(
             external_port   = int(ext or 0),
             internal_client = find("NewInternalClient"),
             internal_port   = int(find("NewInternalPort") or 0),
-            protocol        = find("NewProtocol") or "TCP",
+            protocol        = proto,
             description     = find("NewPortMappingDescription"),
             lease_duration  = int(find("NewLeaseDuration") or 0),
             enabled         = find("NewEnabled") in ("1", "true", "True"),

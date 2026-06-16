@@ -5,8 +5,15 @@ set -euo pipefail
 
 PROJ="$(cd "$(dirname "$0")" && pwd)"
 LOG="/tmp/ins-update.log"
+STATUS="/tmp/ins-update.status"
 LABEL="co.ingloriouslabs.netscan"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+
+# Surface the outcome via a one-line status file so a failed update (diverged
+# tree, transient pip/PyPI failure) is visible instead of silently swallowed
+# into the log — otherwise the menubar keeps showing "Update available" with no
+# feedback. The ERR trap fires on any uncaught failure under `set -e`.
+trap 'echo "fail: update failed — see $LOG" > "$STATUS"' ERR
 
 cd "$PROJ"
 {
@@ -19,10 +26,14 @@ cd "$PROJ"
 
   if [[ "$before" == "$after" ]]; then
     echo "already up to date"
+    echo "ok: already up to date" > "$STATUS"
     exit 0
   fi
 
-  # If requirements changed, refresh deps in the venv.
+  # If requirements changed, refresh deps in the venv. A dep-install failure
+  # aborts here (via set -e + ERR trap) BEFORE the launchd restart, so we never
+  # relaunch new code against stale dependencies — the tree stays on the new
+  # commit but the failure is reported and the user can re-run update.sh.
   if git diff --name-only "$before" "$after" | grep -q '^requirements\.txt$'; then
     if [[ -x "$PROJ/.venv/bin/python3" ]]; then
       "$PROJ/.venv/bin/python3" -m pip install -r requirements.txt
@@ -59,4 +70,6 @@ cd "$PROJ"
       echo "no LaunchAgent installed at $PLIST — start manually"
     fi
   fi
+
+  echo "ok: updated $before → $after" > "$STATUS"
 } >> "$LOG" 2>&1

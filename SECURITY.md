@@ -12,6 +12,9 @@ which means it has to earn your trust before it can be useful.
   run from source).
 - The dashboard binds to `127.0.0.1` only. Nothing INS does is reachable from
   outside your machine.
+- The dashboard loads **no third-party assets** — fonts and all other resources
+  are bundled and served from `127.0.0.1`, so opening it makes zero outbound
+  requests.
 - The only outbound network calls INS itself makes are:
   - **GitHub Releases API** every 6 h, to check for a newer version. Anonymous;
     no machine identifier sent. Disable by setting `INS_NO_UPDATE_CHECK=1`.
@@ -51,14 +54,20 @@ opens a port or sends an HTTP request to it.
 ## The local web dashboard
 
 The dashboard is reachable only at `http://127.0.0.1:8765` and
-`http://localhost:8765`. Every mutating endpoint requires a same-origin
-`Origin` or `Referer` header — a malicious webpage in another tab cannot
-silently install a join hook, mark a device as known, or wake a host. Foreign
-origins are rejected with HTTP 403.
+`http://localhost:8765`. **Every** request — GET and POST — must carry a `Host`
+header matching one of those two loopback names; anything else is rejected with
+HTTP 403. This defeats DNS-rebinding attacks, where a malicious page rebinds its
+own domain to `127.0.0.1` to read your scan data cross-origin. On top of that,
+every *mutating* endpoint also requires a same-origin `Origin`/`Referer` header,
+so a webpage in another tab cannot silently install a join hook, mark a device
+as known, or wake a host.
 
 The join hook stores an arbitrary shell command. Treat that capability the way
-you'd treat your shell history: anyone with access to your Mac account can
-edit it. INS makes no attempt to sandbox the hook script.
+you'd treat your shell history: anyone with access to your Mac account can edit
+it. INS makes no attempt to sandbox the hook script — but the device-supplied
+values it exports (`DEVICE_HOSTNAME`, `DEVICE_VENDOR`, `SSID`, …) are stripped to
+a safe character set first, so a rogue device advertising a booby-trapped name
+can't inject shell metacharacters into an otherwise-innocent hook.
 
 ## Reporting a vulnerability
 

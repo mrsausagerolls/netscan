@@ -38,9 +38,37 @@ final class INSClient: ObservableObject {
 
     func setManualHost(_ host: String) {
         manualHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let url = URL(string: "http://\(manualHost):8765") {
+        if let url = makeBaseURL(from: manualHost) {
             connect(to: url)
         }
+    }
+
+    /// Build the dashboard base URL from a user-entered host, tolerating a
+    /// pasted scheme ("http://10.0.0.4"), an explicit ":port" ("10.0.0.4:8765"),
+    /// a trailing path, and surrounding whitespace — all of which made the old
+    /// `URL(string: "http://\(host):8765")` interpolation produce nil or a
+    /// wrong URL. Defaults to port 8765. Sets lastError and returns nil on
+    /// invalid input so the user gets feedback instead of a silent no-op.
+    private func makeBaseURL(from raw: String) -> URL? {
+        var host = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if host.isEmpty { return nil }
+        if let r = host.range(of: "://") { host = String(host[r.upperBound...]) }
+        if let slash = host.firstIndex(of: "/") { host = String(host[..<slash]) }
+        var port = 8765
+        if let colon = host.lastIndex(of: ":") {
+            let portStr = String(host[host.index(after: colon)...])
+            if let p = Int(portStr), p > 0, p < 65536 {
+                port = p
+                host = String(host[..<colon])
+            }
+        }
+        guard !host.isEmpty else { lastError = "Invalid host"; return nil }
+        var comps = URLComponents()
+        comps.scheme = "http"
+        comps.host = host
+        comps.port = port
+        guard let url = comps.url else { lastError = "Invalid host"; return nil }
+        return url
     }
 
     // MARK: Bonjour
@@ -53,8 +81,11 @@ final class INSClient: ObservableObject {
             guard let self else { return }
             for r in results {
                 if case let .service(name, _, _, _) = r.endpoint {
-                    // Resolve to a host:port via a transient connection.
-                    self.resolve(service: name)
+                    // Resolve to a host:port via a transient connection. The
+                    // browser callback runs on the main queue, but hop onto the
+                    // MainActor explicitly so this compiles under Swift 6 strict
+                    // concurrency (resolve() is @MainActor-isolated).
+                    Task { @MainActor in self.resolve(service: name) }
                     return
                 }
             }
@@ -95,13 +126,20 @@ final class INSClient: ObservableObject {
         do {
             var req = URLRequest(url: stateURL)
             req.timeoutInterval = 10
-            let (data, _) = try await URLSession.shared.data(for: req)
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            // Validate the HTTP status before decoding. The dashboard returns
+            // 200 + the SPA shell (HTML) for unknown paths and JSON error
+            // bodies for 4xx/5xx; without this check a misconfigured host
+            // surfaces as an opaque JSON "dataCorrupted" error.
+            if let http = resp as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                throw URLError(.badServerResponse)
+            }
             let decoded = try JSONDecoder().decode(INSState.self, from: data)
             self.state = decoded
             self.connected = true
             self.lastError = nil
         } catch {
-            self.lastError = String(describing: error)
+            self.lastError = "Couldn't load \(stateURL.host ?? "host"): \(error.localizedDescription)"
             self.connected = false
         }
     }
@@ -117,11 +155,11 @@ final class INSClient: ObservableObject {
                 req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
                 let (bytes, _) = try await URLSession.shared.bytes(for: req)
                 for try await line in bytes.lines {
-                    // Minimal SSE parser: any "event:" or "data:" line triggers
-                    // a refresh of /api/state. We don't actually parse the
-                    // payload because the UI re-renders from /api/state
-                    // anyway.
-                    if line.hasPrefix("event:") || line.hasPrefix("data:") {
+                    // Minimal SSE parser. Each event arrives as an "event:"
+                    // line followed by a "data:" line; key only on "data:" so
+                    // we refresh once per event, not twice. We don't parse the
+                    // payload — the UI re-renders from /api/state anyway.
+                    if line.hasPrefix("data:") {
                         await refresh()
                     }
                 }

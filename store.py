@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import subprocess
 import sqlite3
 import sys
@@ -104,6 +105,7 @@ CREATE TABLE IF NOT EXISTS wan_mappings (
     description  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_wan_ts ON wan_mappings(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_wan_internal ON wan_mappings(internal_ip);
 
 CREATE TABLE IF NOT EXISTS health_snapshots (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -136,9 +138,28 @@ CREATE INDEX IF NOT EXISTS idx_dns_ts ON dns_queries(ts);
 
 # Extra columns added in v2.1 on existing installs. Each entry:
 #   (table, column, ddl_fragment) — applied only if the column is missing.
+#
+# NOTE: any column added to _SCHEMA for an EXISTING table must also be appended
+# here, or upgrading users won't receive it — CREATE TABLE IF NOT EXISTS is a
+# no-op against a table that already exists, so only fresh installs get it.
 _TABLE_MIGRATIONS = [
     ("devices", "no_probe", "INTEGER NOT NULL DEFAULT 0"),
 ]
+
+# Retention caps for the append-only, high-write-rate tables. Each is pruned to
+# this many rows (oldest first) on insert. Every reader uses a far smaller
+# window (minutes-to-hours, or a small LIMIT), so older rows are dead weight.
+# sightings is the highest-write-rate table (one row per visible device per
+# scan) and was previously the only one with no cap — at ~20 devices / 5s it
+# would otherwise add ~345k rows/day forever.
+_MAX_ROWS = {
+    "sightings":         200_000,
+    "dhcp_servers":      5_000,
+    "health_snapshots":  5_000,
+    "bandwidth_samples": 50_000,   # ~1.7 days at ~20 active devices / 1 sample-per-min
+    "dns_queries":       100_000,
+    "scans":             5_000,
+}
 
 
 class DeviceStore:
@@ -146,15 +167,33 @@ class DeviceStore:
         self._data = Path(data_dir) if data_dir else _DATA
         self._data.mkdir(parents=True, exist_ok=True)
         self._db_path = self._data / _DB_NAME
+        # Device inventories, DNS history and router credentials live here.
+        # Lock the directory and DB file down to the owning user so backup/sync
+        # tools and other local accounts can't read them off disk. Best-effort:
+        # platforms without POSIX perms (or odd filesystems) just skip it.
+        try:
+            os.chmod(self._data, 0o700)
+        except OSError:
+            pass
         self._lock = threading.RLock()
         # check_same_thread=False so the scanner threads can share one connection;
         # we serialize via self._lock for write safety.
         self._db = sqlite3.connect(str(self._db_path), check_same_thread=False, isolation_level=None)
         self._db.row_factory = sqlite3.Row
-        self._db.executescript("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
+        # busy_timeout so a transient external lock on the WAL/SHM (Time Machine,
+        # Spotlight, the brief two-instance overlap during an in-app update)
+        # is retried for up to 5s instead of raising 'database is locked' in
+        # the scan loop.
+        self._db.executescript(
+            "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;"
+        )
         self._db.executescript(_SCHEMA)
         self._apply_table_migrations()
         self._migrate_json_if_present()
+        try:
+            os.chmod(self._db_path, 0o600)
+        except OSError:
+            pass
 
     def _apply_table_migrations(self):
         for table, column, ddl in _TABLE_MIGRATIONS:
@@ -174,6 +213,17 @@ class DeviceStore:
             except Exception:
                 self._db.execute("ROLLBACK")
                 raise
+
+    def _cap_table(self, db, table: str):
+        """Prune `table` to its retention cap, oldest rows first. `table` is a
+        source-literal key from _MAX_ROWS, never user input, so interpolating
+        it is injection-safe; the cap itself is bound as a parameter."""
+        db.execute(
+            f"DELETE FROM {table} WHERE id IN ("
+            f" SELECT id FROM {table} ORDER BY ts DESC LIMIT -1 OFFSET ?"
+            f")",
+            (_MAX_ROWS[table],),
+        )
 
     def _q(self, sql: str, args: tuple = ()) -> list[sqlite3.Row]:
         with self._lock:
@@ -325,6 +375,7 @@ class DeviceStore:
                 "INSERT INTO sightings(mac,ip,ts,latency_ms) VALUES(?,?,?,?)",
                 (mac, device.get("ip"), now, latency),
             )
+            self._cap_table(db, "sightings")
 
         device["first_seen"]       = existing["first_seen"] if existing else now
         device["is_known"]         = self.is_known(mac)
@@ -334,11 +385,19 @@ class DeviceStore:
         return device
 
     def update_ports(self, mac: str, ports: list[int]) -> list[int]:
-        """Return list of NEWLY-opened ports (compared to previous state)."""
-        row = self._qone("SELECT ports FROM devices WHERE mac=?", (mac,))
-        prev = set(json.loads(row["ports"])) if row and row["ports"] else set()
-        new = sorted(set(ports) - prev)
+        """Return list of NEWLY-opened ports (compared to previous state).
+
+        Read and write happen inside ONE transaction so two overlapping
+        _bg_port_scan threads for the same device can't compute the
+        newly-opened set against a stale snapshot (which could drop an
+        insecure-port alert).
+        """
         with self._tx() as db:
+            row = db.execute(
+                "SELECT ports FROM devices WHERE mac=?", (mac,)
+            ).fetchone()
+            prev = set(json.loads(row["ports"])) if row and row["ports"] else set()
+            new = sorted(set(ports) - prev)
             db.execute(
                 "UPDATE devices SET ports=? WHERE mac=?",
                 (json.dumps(sorted(ports)), mac),
@@ -446,11 +505,7 @@ class DeviceStore:
                 (time.time(), ip, mac.upper()),
             )
             # Cap rows to avoid runaway growth on flappy networks.
-            db.execute(
-                "DELETE FROM dhcp_servers WHERE id IN ("
-                " SELECT id FROM dhcp_servers ORDER BY ts DESC LIMIT -1 OFFSET 5000"
-                ")"
-            )
+            self._cap_table(db, "dhcp_servers")
 
     # ── WAN port mappings (UPnP IGD enumeration) ─────────────────────────────
 
@@ -492,12 +547,7 @@ class DeviceStore:
                 "INSERT INTO health_snapshots(ts, score, reasons) VALUES(?,?,?)",
                 (time.time(), score, json.dumps(reasons)),
             )
-            # Keep last 5000.
-            db.execute(
-                "DELETE FROM health_snapshots WHERE id IN ("
-                " SELECT id FROM health_snapshots ORDER BY ts DESC LIMIT -1 OFFSET 5000"
-                ")"
-            )
+            self._cap_table(db, "health_snapshots")
 
     def latest_health(self) -> dict | None:
         row = self._qone(
@@ -505,9 +555,16 @@ class DeviceStore:
         )
         if not row:
             return None
+        # Snapshots persist only ts/score/reasons; derive band+headline from the
+        # score so every consumer (web dashboard, /api/health, iOS app) gets the
+        # same fields health.compute() returns. Single source of truth = health.py.
+        import health
+        band, headline = health._band(row["score"])
         return {
             "ts": row["ts"],
             "score": row["score"],
+            "band": band,
+            "headline": headline,
             "reasons": json.loads(row["reasons"]),
         }
 
@@ -524,13 +581,11 @@ class DeviceStore:
                 "VALUES(?,?,?,?)",
                 [(now, mac.upper(), bi, bo) for mac, bi, bo in samples],
             )
-            # Cap: keep last 50k samples (≈ 35 days at 1 sample / device / min
-            # for a small home network).
-            db.execute(
-                "DELETE FROM bandwidth_samples WHERE id IN ("
-                " SELECT id FROM bandwidth_samples ORDER BY ts DESC LIMIT -1 OFFSET 50000"
-                ")"
-            )
+            # Cap at 50k samples (~1.7 days for ~20 active devices at one
+            # sample/device/min). Read windows are <=1h so this is plenty;
+            # switch to age-based pruning if multi-day per-device history is
+            # ever a product goal.
+            self._cap_table(db, "bandwidth_samples")
 
     def bandwidth_for(self, mac: str, since_seconds: int = 3600) -> list[dict]:
         cutoff = time.time() - since_seconds
@@ -568,11 +623,7 @@ class DeviceStore:
                 "INSERT INTO dns_queries(ts, mac, qname, qtype) VALUES(?,?,?,?)",
                 (time.time(), mac.upper(), qname, qtype),
             )
-            db.execute(
-                "DELETE FROM dns_queries WHERE id IN ("
-                " SELECT id FROM dns_queries ORDER BY ts DESC LIMIT -1 OFFSET 100000"
-                ")"
-            )
+            self._cap_table(db, "dns_queries")
 
     def dns_queries_for(self, mac: str, limit: int = 100) -> list[dict]:
         rows = self._q(
@@ -591,16 +642,21 @@ class DeviceStore:
                 (time.time(), count, ssid or ""),
             )
             # Cap history at 5000 rows.
-            db.execute(
-                "DELETE FROM scans WHERE id IN ("
-                " SELECT id FROM scans ORDER BY ts DESC LIMIT -1 OFFSET 5000"
-                ")"
-            )
+            self._cap_table(db, "scans")
 
     @property
     def history(self) -> list:
         rows = self._q("SELECT ts, count, ssid FROM scans ORDER BY ts ASC")
         return [{"ts": r["ts"], "count": r["count"], "ssid": r["ssid"]} for r in rows]
+
+    def recent_scans(self, limit: int = 500) -> list:
+        """Most recent `limit` scans, oldest-first (chart-ready). Lets the
+        dashboard pull a bounded window instead of the whole scans table."""
+        rows = self._q(
+            "SELECT ts, count, ssid FROM scans ORDER BY ts DESC LIMIT ?", (limit,)
+        )
+        return [{"ts": r["ts"], "count": r["count"], "ssid": r["ssid"]}
+                for r in reversed(rows)]
 
     # ── Alerts ───────────────────────────────────────────────────────────────
 
@@ -685,14 +741,31 @@ class DeviceStore:
         script = self.hook_script.strip()
         if not script:
             return
+        # DEVICE_HOSTNAME / DEVICE_VENDOR / SSID are network-derived and
+        # attacker-influenceable (a rogue device can advertise an mDNS/NetBIOS
+        # name). The hook body is a shell the user wrote, so a naive hook like
+        #   logger "new host $DEVICE_HOSTNAME"
+        # would become command injection driven by that advertised name. Strip
+        # every shell metacharacter from the device-supplied values to an
+        # alphanumeric-plus-safe-punctuation allowlist before exporting them.
+        def _safe(val: str) -> str:
+            return re.sub(r"[^A-Za-z0-9 ._:@/-]", "", str(val or ""))[:128]
+
         env = {**os.environ,
-               "DEVICE_IP":       device.get("ip", ""),
-               "DEVICE_MAC":      device.get("mac", ""),
-               "DEVICE_VENDOR":   device.get("vendor", ""),
-               "DEVICE_HOSTNAME": device.get("hostname", ""),
-               "DEVICE_TYPE":     device.get("device_type", ""),
-               "SSID":            ssid or ""}
-        subprocess.Popen(script, shell=True, env=env)
+               "DEVICE_IP":       _safe(device.get("ip", "")),
+               "DEVICE_MAC":      _safe(device.get("mac", "")),
+               "DEVICE_VENDOR":   _safe(device.get("vendor", "")),
+               "DEVICE_HOSTNAME": _safe(device.get("hostname", "")),
+               "DEVICE_TYPE":     _safe(device.get("device_type", "")),
+               "SSID":            _safe(ssid or "")}
+        # Detach from the LaunchAgent session and discard the child's stdio so a
+        # runaway/long-running hook can't take signals with the app or pollute
+        # /tmp/ins.err. close_fds is already the POSIX default.
+        subprocess.Popen(
+            script, shell=True, env=env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
 
     # ── Settings ─────────────────────────────────────────────────────────────
 
