@@ -7,7 +7,7 @@ import socket
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from ipaddress import IPv4Network
 
 PROBE_PORTS = {
@@ -51,31 +51,53 @@ console = Console()
 
 # ── Network detection ────────────────────────────────────────────────────────
 
-def get_wifi_info() -> tuple[str, str, str]:
-    """Return (interface, local_ip, cidr_network) for the active WiFi."""
+_wifi_iface_cache: str | None = None
+
+
+def _detect_wifi_iface() -> str:
+    """Find the active Wi-Fi interface name (e.g. 'en0') via networksetup."""
     hw_lines = subprocess.run(
         ["networksetup", "-listallhardwareports"],
         capture_output=True, text=True
     ).stdout.splitlines()
-
-    iface = "en0"
     for i, line in enumerate(hw_lines):
         if "Wi-Fi" in line or "AirPort" in line:
             for nearby in hw_lines[i:i + 4]:
                 m = re.search(r"Device:\s+(en\d+)", nearby)
                 if m:
-                    iface = m.group(1)
-                    break
+                    return m.group(1)
             break
+    return "en0"
 
+
+def _iface_inet(iface: str) -> tuple[str, str] | None:
+    """Return (ip, netmask_hex) for `iface`, or None if it has no IPv4 address."""
     ifc = subprocess.run(["ifconfig", iface], capture_output=True, text=True).stdout
     m = re.search(r"inet (\d+\.\d+\.\d+\.\d+) netmask (0x[0-9a-f]+)", ifc)
-    if not m:
+    return (m.group(1), m.group(2)) if m else None
+
+
+def get_wifi_info() -> tuple[str, str, str]:
+    """Return (interface, local_ip, cidr_network) for the active WiFi.
+
+    The Wi-Fi interface NAME is a stable hardware mapping, so it's cached after
+    first detection — that saves a `networksetup -listallhardwareports`
+    subprocess on every subsequent scan. We only re-detect if the cached
+    interface has stopped reporting an IPv4 address (e.g. dock/undock).
+    """
+    global _wifi_iface_cache
+    iface = _wifi_iface_cache or _detect_wifi_iface()
+    inet = _iface_inet(iface)
+    if inet is None and _wifi_iface_cache:
+        iface = _detect_wifi_iface()      # cached iface went away — re-detect once
+        inet = _iface_inet(iface)
+    if inet is None:
         console.print(f"[red]No IP found on {iface} — are you connected to WiFi?[/red]")
         sys.exit(1)
 
-    ip = m.group(1)
-    prefix = bin(int(m.group(2), 16)).count("1")
+    _wifi_iface_cache = iface
+    ip, netmask = inet
+    prefix = bin(int(netmask, 16)).count("1")
     network = str(IPv4Network(f"{ip}/{prefix}", strict=False))
     return iface, ip, network
 
@@ -252,13 +274,59 @@ def fallback_scan(network: str, quiet: bool = False) -> list[dict]:
 
 # ── Enrichment ───────────────────────────────────────────────────────────────
 
-def get_vendor(mac: str) -> str:
-    # Any lookup failure — unknown OUI, offline, malformed MAC — maps to the
-    # placeholder; vendor naming is best-effort and must never break a scan.
+# ── Enrichment caches ────────────────────────────────────────────────────────
+#
+# The scan loop re-runs every ~30s (and bursts on manual rescan / SSID changes).
+# Vendor is STATIC per MAC, and reverse-DNS names rarely change — re-resolving
+# them every scan is pure waste. These module-level caches let enrich() resolve
+# each fact at most once per TTL and reuse it thereafter. Cache writes happen on
+# the calling thread (never inside the worker pool), so no lock is needed.
+_HOSTNAME_TTL = 300.0   # reverse-DNS rarely changes — re-check every 5 min
+_LATENCY_TTL  = 20.0    # keep ~per-scan freshness but dedupe burst rescans
+
+_vendor_cache:   dict[str, str] = {}                          # MAC -> vendor (incl. "—")
+_hostname_cache: dict[str, tuple[float, str]] = {}            # IP  -> (monotonic_ts, hostname)
+_latency_cache:  dict[str, tuple[float, float | None]] = {}   # IP  -> (monotonic_ts, latency)
+
+
+def clear_caches() -> None:
+    """Drop all enrichment caches. For tests, and callable on a network change."""
+    _vendor_cache.clear()
+    _hostname_cache.clear()
+    _latency_cache.clear()
+
+
+def _is_locally_administered(mac: str) -> bool:
+    """True if the MAC is locally-administered (randomized / privacy MAC). Its
+    OUI carries no manufacturer information, so an OUI lookup is meaningless."""
     try:
-        return _mac_lookup.lookup(mac)
-    except Exception:
+        return bool(int(mac[:2], 16) & 0b10)
+    except (ValueError, IndexError):
+        return False
+
+
+def get_vendor(mac: str) -> str:
+    """Resolve a MAC's manufacturer from the OUI database — memoized per MAC.
+
+    Randomized/locally-administered MACs and the IEEE "Private" placeholder carry
+    no real vendor, so they resolve to "—" without touching the OUI database.
+    Any lookup failure maps to "—"; vendor naming is best-effort and must never
+    break a scan.
+    """
+    cached = _vendor_cache.get(mac)
+    if cached is not None:
+        return cached
+    if _is_locally_administered(mac):
+        _vendor_cache[mac] = "—"
         return "—"
+    try:
+        v = _mac_lookup.lookup(mac)
+        if not v or v.strip().lower() == "private":
+            v = "—"
+    except Exception:
+        v = "—"
+    _vendor_cache[mac] = v
+    return v
 
 
 def get_hostname(ip: str) -> str:
@@ -441,25 +509,57 @@ def best_fingerprint(hints: dict) -> str:
     return ""
 
 
+def _resolve_stale(ips: list[str], fn, cache: dict, ttl: float,
+                   timeout: float, default):
+    """Resolve `fn(ip)` for the subset of `ips` whose cache entry is missing or
+    older than `ttl`, in one bounded thread pool, and write the results back to
+    `cache` as (now, value). A whole-batch deadline (`timeout`) caps the wall
+    time; IPs that don't resolve in time keep their previous value (or default).
+    No nested pools, and we never block on shutdown for a wedged resolver."""
+    now = time.monotonic()
+    stale = [ip for ip in ips
+             if ip not in cache or (now - cache[ip][0]) >= ttl]
+    if not stale:
+        return
+    ex = ThreadPoolExecutor(max_workers=min(20, len(stale)))
+    futs = {ex.submit(fn, ip): ip for ip in stale}
+    wait(list(futs), timeout=timeout)
+    for fut, ip in futs.items():
+        if fut.done():
+            try:
+                val = fut.result()
+            except Exception:
+                val = default
+            cache[ip] = (now, val)
+        # else: timed out — leave the cache untouched so we retry next scan and
+        # keep displaying the last known value (if any) rather than blanking it.
+    ex.shutdown(wait=False)   # don't block on a stuck resolver
+
+
 def enrich(devices: list[dict], local_ip: str, skip_vendor: bool = False) -> list[dict]:
+    """Attach vendor / hostname / latency / me to each device.
+
+    Vendor is memoized per MAC; reverse-DNS and latency are resolved only when
+    their per-IP cache entry is missing or stale, so a steady-state rescan does
+    almost no network work — the expensive resolution happens once, then is
+    reused until the TTL expires.
+    """
     for d in devices:
         d["vendor"] = "—" if skip_vendor else get_vendor(d["mac"])
         d["me"] = d["ip"] == local_ip
 
-    def _resolve(d):
-        # gethostbyaddr has no built-in timeout; cap it so a slow upstream
-        # resolver can't stall the whole scan cycle.
-        try:
-            from concurrent.futures import ThreadPoolExecutor as _TPE
-            with _TPE(max_workers=1) as inner:
-                d["hostname"] = inner.submit(get_hostname, d["ip"]).result(timeout=1.5)
-        except Exception:
-            d["hostname"] = "—"
-        d["latency"] = ping_latency(d["ip"])
-        return d
+    ips = [d["ip"] for d in devices]
+    _resolve_stale(ips, get_hostname, _hostname_cache, _HOSTNAME_TTL,
+                   timeout=1.5, default="—")
+    _resolve_stale(ips, ping_latency, _latency_cache, _LATENCY_TTL,
+                   timeout=2.0, default=None)
 
-    with ThreadPoolExecutor(max_workers=20) as ex:
-        return list(ex.map(_resolve, devices))
+    for d in devices:
+        h = _hostname_cache.get(d["ip"])
+        d["hostname"] = h[1] if h else "—"
+        l = _latency_cache.get(d["ip"])
+        d["latency"] = l[1] if l else None
+    return devices
 
 # ── Display ──────────────────────────────────────────────────────────────────
 

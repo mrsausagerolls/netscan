@@ -329,12 +329,17 @@ class DeviceStore:
 
     # ── Seen devices ─────────────────────────────────────────────────────────
 
-    def touch(self, device: dict) -> dict:
+    def touch(self, device: dict, known: dict | None = None) -> dict:
         """Record this sighting; return device enriched with history fields.
 
         Also returns:
           device["_is_new"]         — True if first time we've ever seen this MAC
           device["_vendor_changed"] — old vendor string if it changed (else None)
+
+        Pass `known` (the {mac: {name, ...}} dict from `self.known`) to resolve
+        is_known/known_name from it instead of issuing two SQL queries per call —
+        the scan loop touches every device every cycle, so this avoids 2N
+        redundant round-trips.
         """
         mac     = device["mac"]
         now     = time.time()
@@ -378,8 +383,13 @@ class DeviceStore:
             self._cap_table(db, "sightings")
 
         device["first_seen"]       = existing["first_seen"] if existing else now
-        device["is_known"]         = self.is_known(mac)
-        device["known_name"]       = self.known_name(mac)
+        if known is not None:
+            kn = known.get(mac)
+            device["is_known"]   = kn is not None
+            device["known_name"] = kn.get("name", "") if kn else ""
+        else:
+            device["is_known"]   = self.is_known(mac)
+            device["known_name"] = self.known_name(mac)
         device["_is_new"]          = is_new
         device["_vendor_changed"]  = vendor_changed
         return device

@@ -33,7 +33,10 @@ import notify
 import security
 import sniffer
 import webhooks
-from scanner import do_scan, enrich, scan_ports, probe_device, best_fingerprint, get_wifi_info
+from scanner import (
+    do_scan, enrich, scan_ports, probe_device, best_fingerprint, get_wifi_info,
+    clear_caches as clear_scanner_caches,
+)
 from store import DeviceStore
 from updater import check_for_update
 from version import GITHUB_REPO, __app_name__, __version__
@@ -500,13 +503,29 @@ class InsApp(rumps.App):
             with self._lock:
                 ssid         = self._ssid
                 use_fallback = self._use_fallback
+                prev_net     = self._net
                 self._net    = network
+            if network != prev_net:
+                # The network identity changed (roamed, switched SSID, or the
+                # subnet changed). Drop the per-IP enrichment caches so a
+                # colliding IP (e.g. 192.168.1.10 on both home and office
+                # /24s) can't show the previous network's hostname/latency.
+                clear_scanner_caches()
 
             devices, use_fallback = do_scan(
                 network, timeout=3, use_fallback=use_fallback, quiet=True,
                 iface_ip=local_ip,
             )
             devices = enrich(devices, local_ip, skip_vendor=False)
+
+            # Load the known-device map and the stored-device records ONCE for
+            # the whole loop instead of querying is_known/known_name/get_device
+            # per device (the loop runs for every device on every scan). The
+            # fingerprint/ports we read from `seen0` are written by the sniffer
+            # and the previous scan's background port-scan, so a snapshot taken
+            # here is current for classification.
+            known = store.known
+            seen0 = store.all_seen
 
             # Persist to store; this also stamps _is_new / _vendor_changed.
             self_type, self_vendor = ("unknown", "")
@@ -522,20 +541,21 @@ class InsApp(rumps.App):
                         self_type, self_vendor = _local_mac_model()
                     if self_vendor and d.get("vendor", "—") in ("", "—"):
                         d["vendor"] = self_vendor
-                store.touch(d)
+                store.touch(d, known=known)
                 # Auto-name the local Mac on first sighting. Safe to mark Known —
                 # it's literally the host running INS. Idempotent: only fires if
                 # the user hasn't already Known-marked it (possibly with a name
                 # they prefer).
-                if d.get("me") and not store.is_known(d["mac"]):
+                if d.get("me") and d["mac"] not in known:
                     name = _local_computer_name()
                     if name:
                         store.add_known(d["mac"], name)
                 # Classify on every scan — cheap, and lets the type refine
                 # as ports/fingerprints come in over subsequent rescans.
-                stored = store.get_device(d["mac"]) or {}
+                stored = seen0.get(d["mac"], {})
                 fp_hints = stored.get("fingerprint", {}) or {}
                 fp_str   = best_fingerprint(fp_hints)
+                d["fp_name"] = fp_str   # attach so the menu rebuild needn't re-query
                 # DHCP option 55 lets us still identify devices behind a
                 # randomised MAC — let it patch the empty vendor column.
                 dhcp_vendor_hint = classify.dhcp_vendor(fp_hints)
@@ -722,12 +742,9 @@ class InsApp(rumps.App):
 
             # Label — same name-resolution order as the dashboard:
             # known_name > probe fingerprint > hostname > vendor > bare IP.
-            name = d.get("known_name") or ""
-            if not name:
-                rec = store.get_device(d["mac"]) or {}
-                fp = best_fingerprint(rec.get("fingerprint", {}))
-                if fp:
-                    name = fp
+            # fp_name was computed during the scan (see _run_scan), so the
+            # main-thread menu rebuild doesn't re-query the store per device.
+            name = d.get("known_name") or d.get("fp_name") or ""
             if not name:
                 hn = d.get("hostname") or ""
                 if hn and hn != "—":
@@ -793,9 +810,11 @@ class InsApp(rumps.App):
             devices = list(self._devices)
             network = self._net or ""
             ssid    = self._ssid or "Unknown"
+        known = store.known   # one query, not 2 per device
         for d in devices:
-            d["is_known"]   = store.is_known(d["mac"])
-            d["known_name"] = store.known_name(d["mac"])
+            kn = known.get(d["mac"])
+            d["is_known"]   = kn is not None
+            d["known_name"] = kn.get("name", "") if kn else ""
         with self._lock:
             self._devices = devices
             self._pending = (devices, network, ssid)

@@ -1312,3 +1312,91 @@ def test_health_unknown_penalty_scales_with_count():
     fifty = health.compute(devices=devs(50), unack_alerts=[], wan_mappings=[], dhcp_servers=[])
     assert five["score"] < one["score"]        # scales with count
     assert fifty["score"] == five["score"]     # capped at the soft cap (20)
+
+
+# ── scanner: vendor memoization + randomized-MAC handling + enrich caching ──
+
+def test_is_locally_administered():
+    from scanner import _is_locally_administered
+    assert _is_locally_administered("F2:18:98:AA:BB:CC")     # x2 -> LA bit set
+    assert _is_locally_administered("DE:AD:BE:EF:00:01")     # DE -> LA bit set
+    assert not _is_locally_administered("3C:5A:B4:00:00:00") # universally administered
+    assert not _is_locally_administered("AC:DE:48:00:11:22")
+
+
+def test_get_vendor_skips_randomized_and_private(monkeypatch):
+    import scanner
+    scanner.clear_caches()
+    calls = {"n": 0}
+    monkeypatch.setattr(scanner._mac_lookup, "lookup",
+                        lambda m: (calls.__setitem__("n", calls["n"] + 1) or "ShouldNotBeUsed"))
+    # Randomized (locally-administered) MAC: no OUI lookup at all.
+    assert scanner.get_vendor("F2:18:98:AA:BB:CC") == "—"
+    assert calls["n"] == 0
+    # IEEE "Private" placeholder maps to the em-dash, not a fake vendor name.
+    scanner.clear_caches()
+    monkeypatch.setattr(scanner._mac_lookup, "lookup", lambda m: "Private")
+    assert scanner.get_vendor("3C:5A:B4:00:00:00") == "—"
+
+
+def test_get_vendor_memoizes(monkeypatch):
+    import scanner
+    scanner.clear_caches()
+    calls = {"n": 0}
+    monkeypatch.setattr(scanner._mac_lookup, "lookup",
+                        lambda m: (calls.__setitem__("n", calls["n"] + 1) or "Acme"))
+    assert scanner.get_vendor("3C:5A:B4:00:00:00") == "Acme"
+    assert scanner.get_vendor("3C:5A:B4:00:00:00") == "Acme"
+    assert calls["n"] == 1   # second lookup served from the memo
+
+
+def test_enrich_caches_hostname_and_latency(monkeypatch):
+    import scanner
+    scanner.clear_caches()
+    hcalls = {"n": 0}; pcalls = {"n": 0}
+    monkeypatch.setattr(scanner, "get_hostname",
+                        lambda ip: (hcalls.__setitem__("n", hcalls["n"] + 1) or f"h-{ip}"))
+    monkeypatch.setattr(scanner, "ping_latency",
+                        lambda ip: (pcalls.__setitem__("n", pcalls["n"] + 1) or 1.0))
+    monkeypatch.setattr(scanner, "get_vendor", lambda mac: "V")
+    devs = [{"ip": "10.0.0.5", "mac": "AA:BB:CC:00:00:01"}]
+    r1 = scanner.enrich([dict(d) for d in devs], "10.0.0.9")
+    r2 = scanner.enrich([dict(d) for d in devs], "10.0.0.9")   # within TTL -> cached
+    assert hcalls["n"] == 1 and pcalls["n"] == 1               # resolved once, reused
+    assert r1[0]["hostname"] == "h-10.0.0.5" == r2[0]["hostname"]
+    assert r1[0]["latency"] == 1.0
+    assert r1[0]["me"] is False
+    scanner.clear_caches()
+
+
+def test_touch_uses_known_map_without_querying(tmp_path):
+    import store
+    s = store.DeviceStore(data_dir=tmp_path)
+    s.add_known("AA:BB:CC:00:00:01", "My Phone")
+    known = s.known
+    out = s.touch({"mac": "AA:BB:CC:00:00:01", "ip": "10.0.0.5",
+                   "vendor": "Acme", "hostname": "x"}, known=known)
+    assert out["is_known"] is True and out["known_name"] == "My Phone"
+    out2 = s.touch({"mac": "FF:EE:DD:00:00:09", "ip": "10.0.0.6",
+                    "vendor": "—", "hostname": "—"}, known=known)
+    assert out2["is_known"] is False and out2["known_name"] == ""
+
+
+def test_clear_caches_forces_fresh_resolution_after_roaming(monkeypatch):
+    """A roamed network can reuse the same subnet; clearing the IP-keyed caches
+    must let a colliding IP re-resolve to the new network's device."""
+    import scanner
+    scanner.clear_caches()
+    names = iter(["old-network-device", "new-network-device"])
+    monkeypatch.setattr(scanner, "get_hostname", lambda ip: next(names))
+    monkeypatch.setattr(scanner, "ping_latency", lambda ip: 1.0)
+    monkeypatch.setattr(scanner, "get_vendor", lambda mac: "V")
+    dev = [{"ip": "192.168.1.10", "mac": "AA:BB:CC:00:00:01"}]
+    r1 = scanner.enrich([dict(d) for d in dev], "192.168.1.1")
+    assert r1[0]["hostname"] == "old-network-device"
+    r2 = scanner.enrich([dict(d) for d in dev], "192.168.1.1")   # within TTL -> cached
+    assert r2[0]["hostname"] == "old-network-device"
+    scanner.clear_caches()                                       # simulate network change
+    r3 = scanner.enrich([dict(d) for d in dev], "192.168.1.1")
+    assert r3[0]["hostname"] == "new-network-device"
+    scanner.clear_caches()
