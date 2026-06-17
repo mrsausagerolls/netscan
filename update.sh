@@ -9,6 +9,10 @@ STATUS="/tmp/ins-update.status"
 LABEL="co.ingloriouslabs.netscan"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 
+# The release tag the app asked us to install (e.g. "2.4.13"); empty when run
+# by hand, in which case we track origin/main.
+TARGET_TAG="${1:-}"
+
 # Surface the outcome via a one-line status file so a failed update (diverged
 # tree, transient pip/PyPI failure) is visible instead of silently swallowed
 # into the log — otherwise the menubar keeps showing "Update available" with no
@@ -18,11 +22,29 @@ trap 'echo "fail: update failed — see $LOG" > "$STATUS"' ERR
 cd "$PROJ"
 {
   echo "── $(date -u +%Y-%m-%dT%H:%M:%SZ) update start ──"
-  git fetch --quiet origin
+  git fetch --quiet --tags origin
   before="$(git rev-parse HEAD)"
-  git pull --ff-only
+
+  # Resolve what to land on. Prefer the exact released tag the user was shown
+  # ("Update to vX.Y.Z"), so the applied code matches their consent. Fall back
+  # to origin/main if the tag isn't fetchable yet.
+  ref="origin/main"
+  if [[ -n "$TARGET_TAG" ]]; then
+    cand="v${TARGET_TAG#v}"
+    if git rev-parse -q --verify "refs/tags/$cand^{commit}" >/dev/null 2>&1; then
+      ref="$cand"
+    fi
+  fi
+
+  # ~/.ins is a MANAGED checkout — the user shouldn't be hand-editing it. Hard
+  # reset onto the target so a stray local change (which made the old
+  # `git pull --ff-only` fail with "Aborting", stranding the update) can't block
+  # it. Ignored files — the .venv and data/ins.db — are untouched by reset.
+  git reset --hard --quiet
+  git checkout --quiet main 2>/dev/null || git checkout --quiet -B main origin/main
+  git reset --hard --quiet "$ref"
   after="$(git rev-parse HEAD)"
-  echo "$before → $after"
+  echo "$before → $after (target $ref)"
 
   if [[ "$before" == "$after" ]]; then
     echo "already up to date"

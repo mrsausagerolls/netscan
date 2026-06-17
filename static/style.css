@@ -349,6 +349,12 @@ main{flex:1;overflow:hidden;display:flex;flex-direction:column}
   box-shadow:var(--ring);
 }
 
+/* "Away" = seen recently but missed by the latest sweep (still within the
+   grace window). Dimmed so the user can tell it isn't currently responding,
+   but kept in the list instead of flickering out. */
+.device-card.is-away{opacity:.5}
+.dl-row.is-away{opacity:.5}
+
 .dc-head{display:flex;align-items:center;gap:11px;position:relative;z-index:1}
 .dc-typeicon{
   width:38px;height:38px;border-radius:10px;

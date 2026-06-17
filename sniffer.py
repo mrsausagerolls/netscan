@@ -174,6 +174,7 @@ def _handle_packet(pkt, local_mac: str, threat_list, store) -> None:
             msg_type = None
             prl = None
             vendor_class = None
+            host_name = None
             for opt in options:
                 if not isinstance(opt, tuple) or len(opt) < 2:
                     continue
@@ -184,16 +185,30 @@ def _handle_packet(pkt, local_mac: str, threat_list, store) -> None:
                     prl = val
                 elif name == "vendor_class_id":
                     vendor_class = val.decode("ascii", errors="ignore") if isinstance(val, (bytes, bytearray)) else str(val)
-            if msg_type in (1, 3) and prl is not None and pkt.haslayer(BOOTP):
+                elif name == "hostname":
+                    # DHCP option 12 — the device's self-declared name (the name
+                    # the user set on the phone/laptop), broadcast on lease
+                    # request. The strongest passive auto-naming signal.
+                    host_name = val.decode("ascii", errors="ignore") if isinstance(val, (bytes, bytearray)) else str(val)
+            if msg_type in (1, 3) and pkt.haslayer(BOOTP):
                 # BOOTP `chaddr` is the client's hardware address — authoritative
                 # even when the L2 source is a relay or randomised.
                 chaddr = pkt[BOOTP].chaddr or b""
                 cmac = ":".join(f"{b:02X}" for b in chaddr[:6]) if chaddr else src_mac
-                fp_str = ",".join(str(int(b)) for b in prl)
-                hints = {"dhcp_55": fp_str}
+                hints: dict = {}
+                if prl is not None:
+                    hints["dhcp_55"] = ",".join(str(int(b)) for b in prl)
                 if vendor_class:
                     hints["dhcp_vendor_class"] = vendor_class
-                store.merge_fingerprint(cmac, hints)
+                if host_name:
+                    # Device-controlled — keep printable chars only and cap to a
+                    # DNS label's length so a hostile name can't smuggle control
+                    # characters into the menu/logs (the dashboard escapes it too).
+                    clean = "".join(c for c in host_name if c.isprintable()).strip()[:63]
+                    if clean:
+                        hints["dhcp_hostname"] = clean
+                if hints:
+                    store.merge_fingerprint(cmac, hints)
         except Exception:
             pass  # malformed DHCP packets shouldn't kill the sniffer thread
 

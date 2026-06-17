@@ -1400,3 +1400,53 @@ def test_clear_caches_forces_fresh_resolution_after_roaming(monkeypatch):
     r3 = scanner.enrich([dict(d) for d in dev], "192.168.1.1")
     assert r3[0]["hostname"] == "new-network-device"
     scanner.clear_caches()
+
+
+# ── scanner: graceful no-network + broadcast-name priority ──────────────────
+
+def test_get_wifi_info_raises_no_network_instead_of_exiting(monkeypatch):
+    import pytest
+    import scanner
+    monkeypatch.setattr(scanner, "_iface_inet", lambda iface: None)
+    monkeypatch.setattr(scanner, "_detect_wifi_iface", lambda: "en9")
+    scanner._wifi_iface_cache = None
+    with pytest.raises(scanner.NoNetworkError):
+        scanner.get_wifi_info()
+
+
+def test_best_fingerprint_prefers_dhcp_hostname():
+    from scanner import best_fingerprint
+    # DHCP option 12 (the device's broadcast name) wins over everything else.
+    assert best_fingerprint({"dhcp_hostname": "Johns-iPhone",
+                             "mdns": "x.local", "http_title": "Login"}) == "Johns-iPhone"
+    assert best_fingerprint({"mdns": "living-room.local"}) == "living-room.local"
+    assert best_fingerprint({}) == ""
+
+
+def test_sniffer_captures_dhcp_hostname():
+    import pytest
+    try:
+        from scapy.layers.l2 import Ether
+        from scapy.layers.inet import IP, UDP
+        from scapy.layers.dhcp import BOOTP, DHCP
+    except ImportError:
+        pytest.skip("scapy not installed")
+    import sniffer
+    pkt = (Ether(src="aa:bb:cc:dd:ee:ff", dst="ff:ff:ff:ff:ff:ff") /
+           IP(src="0.0.0.0", dst="255.255.255.255") /
+           UDP(sport=68, dport=67) /
+           BOOTP(chaddr=bytes.fromhex("aabbccddeeff")) /
+           DHCP(options=[("message-type", "request"),
+                         ("hostname", b"Johns-iPhone"),
+                         ("param_req_list", [1, 3, 6]), "end"]))
+    pkt = Ether(bytes(pkt))   # re-parse from the wire so options decode as ints
+
+    class FakeStore:
+        def __init__(self): self.merged = {}
+        def merge_fingerprint(self, mac, hints): self.merged.setdefault(mac, {}).update(hints)
+        def record_dns_query(self, *a): pass
+        def add_alert(self, **k): return 1
+
+    fs = FakeStore()
+    sniffer._handle_packet(pkt, local_mac="11:22:33:44:55:66", threat_list=None, store=fs)
+    assert fs.merged.get("AA:BB:CC:DD:EE:FF", {}).get("dhcp_hostname") == "Johns-iPhone"

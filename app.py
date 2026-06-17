@@ -35,7 +35,7 @@ import sniffer
 import webhooks
 from scanner import (
     do_scan, enrich, scan_ports, probe_device, best_fingerprint, get_wifi_info,
-    clear_caches as clear_scanner_caches,
+    clear_caches as clear_scanner_caches, NoNetworkError,
 )
 from store import DeviceStore
 from updater import check_for_update
@@ -44,6 +44,7 @@ from wol import wake
 
 POLL_INTERVAL    = 5            # how often we re-check the SSID / scan timer
 AUTO_RESCAN      = 30           # full rescan cadence on a quiescent network
+PRESENCE_GRACE   = 300          # keep a device listed this long after it last responded
 ICON             = "📡"
 DASH_PORT        = 8765
 UPDATE_INTERVAL  = 6 * 60 * 60  # check GitHub Releases every 6 h
@@ -379,6 +380,8 @@ class InsApp(rumps.App):
                 "no_probe":        rec.get("no_probe", False),
                 "wan_exposed":     wan_by_ip.get(d.get("ip", ""), []),
                 "bw_samples":      samples,  # [(ts, in, out), ...] last 30 min
+                "present":         d.get("present", True),
+                "last_seen":       d.get("last_seen") or rec.get("last_seen"),
             })
         # Triage queue = unknown, non-self devices, ordered newest first.
         triage = sorted(
@@ -574,29 +577,64 @@ class InsApp(rumps.App):
                 d["device_type"]     = dtype
                 d["type_confidence"] = conf
 
+            now = time.time()
+            for d in devices:
+                d["present"]   = True
+                d["last_seen"] = now
+
+            # Carry over devices that were seen very recently but missed by THIS
+            # sweep. ARP/mDNS are probabilistic, and a full-tunnel VPN or a
+            # sleeping phone routinely drops a response — without this, a still
+            # connected device flickers out of the list every time a sweep
+            # misses it. Carried devices keep their last-known data, are marked
+            # not-present, and age out after PRESENCE_GRACE seconds of silence.
             with self._lock:
-                prev_ips         = {x["ip"] for x in self._devices}
-                self._devices    = devices
-                self._last_scan  = time.time()
+                prev_devices = list(self._devices)
+            cur_macs = {d["mac"] for d in devices}
+            carried = []
+            for pd in prev_devices:
+                if pd["mac"] in cur_macs:
+                    continue
+                last = pd.get("last_seen") or seen0.get(pd["mac"], {}).get("last_seen", 0)
+                if last and (now - last) <= PRESENCE_GRACE:
+                    pd = dict(pd)
+                    pd["present"] = False
+                    carried.append(pd)
+            display = devices + carried
+
+            with self._lock:
+                # All MACs we knew last scan — present AND carried-away. A device
+                # "joins" only when its MAC is new to this set.
+                prev_macs        = {x["mac"] for x in self._devices}
+                self._devices    = display
+                self._last_scan  = now
                 self._use_fallback = use_fallback
-                self._pending    = (devices, network, ssid or "Unknown")
+                self._pending    = (display, network, ssid or "Unknown")
 
-            store.record_scan(len(devices), ssid or "")
+            # Record the stable population (present + recently-seen) so the
+            # history chart and menu-bar count don't dip every time a sweep
+            # misses a still-connected device.
+            store.record_scan(len(display), ssid or "")
 
-            # Run security rules now — port-change rules will rerun in _bg_port_scan.
+            # Security rules + port scans run on the devices ACTUALLY seen this
+            # sweep — carried-over devices carry no new information.
             self._evaluate_and_dispatch_alerts(devices, new_ports_by_mac={})
 
-            joined = {d["ip"] for d in devices} - prev_ips
-            if joined and prev_ips:
-                for ip in sorted(joined):
-                    d = next((x for x in devices if x["ip"] == ip), {})
+            # Join detection keys off MAC, not IP: a returning away-device
+            # (known MAC) isn't a join, and a genuinely new device isn't missed
+            # just because DHCP reused a carried device's IP within the grace
+            # window. `prev_macs` empty = first populated scan → suppress the
+            # join firehose.
+            joined_devs = [d for d in devices if d["mac"] not in prev_macs]
+            if joined_devs and prev_macs:
+                for d in sorted(joined_devs, key=lambda x: x.get("ip", "")):
                     store.run_hook(d, ssid or "")
                     events.publish(events.DEVICE_JOINED, {"device": d, "ssid": ssid})
 
             events.publish(events.SCAN_COMPLETED,
-                           {"count": len(devices), "ssid": ssid or ""})
+                           {"count": len(display), "ssid": ssid or ""})
 
-            self._set_title(f"{ICON} {len(devices)}")
+            self._set_title(f"{ICON} {len(display)}")
 
             # Port scan in background — doesn't block menu update
             threading.Thread(
@@ -605,6 +643,13 @@ class InsApp(rumps.App):
                 daemon=True,
             ).start()
 
+        except NoNetworkError:
+            # Wi-Fi briefly unavailable (sleep, VPN transition, roaming). Keep
+            # the current list (the grace period preserves devices) and retry on
+            # the next poll. _monitor_loop owns the "Not connected" state when
+            # Wi-Fi is actually down, so stay quiet here — no log spam, no
+            # thread death (the old sys.exit killed the scan thread).
+            pass
         except Exception:
             # A recurring scan failure is otherwise invisible — just a silent
             # "!" in the menu bar. Log the traceback to /tmp/ins.err and stamp
@@ -735,8 +780,12 @@ class InsApp(rumps.App):
             is_known = d.get("is_known", False)
             is_me    = d.get("me", False)
 
-            # Status emoji
-            if is_me:       icon = "🔵"
+            present = d.get("present", True)
+
+            # Status emoji — 💤 for a device seen recently but missing from the
+            # latest sweep (kept in the list during the grace window).
+            if not present: icon = "💤"
+            elif is_me:     icon = "🔵"
             elif is_known:  icon = "🟢"
             else:           icon = "🔴"
 
@@ -755,9 +804,10 @@ class InsApp(rumps.App):
                 vendor = d.get("vendor", "")
                 label  = f"{icon}  {ip}  —  {vendor}" if vendor and vendor != "—" else f"{icon}  {ip}"
 
-            latency = d.get("latency")
-            if latency is not None:
-                label += f"  ({latency}ms)"
+            if not present:
+                label += "  ·  away"
+            elif d.get("latency") is not None:
+                label += f"  ({d['latency']}ms)"
 
             # Each row has a submenu: copy IP, copy MAC, WoL, toggle known
             row = rumps.MenuItem(label)
@@ -931,8 +981,8 @@ class InsApp(rumps.App):
 
         ok = rumps.alert(
             title=f"Update {__app_name__}",
-            message=f"Pull v{info['tag']} from GitHub and restart?\n\n"
-                    f"Runs: git pull --ff-only + launchctl restart.\n"
+            message=f"Update to v{info['tag']} and restart?\n\n"
+                    f"Lands exactly on the v{info['tag']} release, then restarts.\n"
                     f"Log: /tmp/ins-update.log",
             ok="Update", cancel="Cancel",
         )
@@ -944,15 +994,46 @@ class InsApp(rumps.App):
             rumps.alert("Update failed", f"update.sh not found at {script}")
             return
 
-        # Detach so the script survives launchctl kickstart -k killing this process.
+        # Clear any stale result so the watcher only reacts to THIS run.
+        try:
+            os.remove("/tmp/ins-update.status")
+        except OSError:
+            pass
+
+        # Detach so the script survives launchctl kickstart -k killing this
+        # process. Pass the release tag so it lands on exactly what we offered.
         subprocess.Popen(
-            [script],
+            [script, info["tag"]],
             cwd=PROJ_DIR,
             start_new_session=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             close_fds=True,
         )
+        # On success update.sh restarts us (this thread dies with the process);
+        # on failure we survive, so watch for a "fail" status and surface it
+        # instead of leaving the user clicking a dead Update item.
+        threading.Thread(target=self._watch_update_result, daemon=True).start()
+
+    def _watch_update_result(self):
+        for _ in range(30):                         # up to ~60s
+            time.sleep(2)
+            try:
+                with open("/tmp/ins-update.status") as f:
+                    status = f.read().strip()
+            except OSError:
+                continue
+            if status.startswith("fail"):
+                # osascript runs out-of-process, so it's safe from this thread.
+                subprocess.run(
+                    ["osascript", "-e",
+                     'display notification "Update failed — see /tmp/ins-update.log" '
+                     f'with title "{__app_name__}"'],
+                    check=False,
+                )
+                return
+            if status.startswith("ok"):
+                return
 
 
 if __name__ == "__main__":

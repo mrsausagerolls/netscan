@@ -461,7 +461,7 @@ function deviceListRow(d) {
       ? `<button class="btn btn-tiny btn-danger" data-action="unknown" data-mac="${escHtml(d.mac)}">Unknown</button>`
       : `<button class="btn btn-tiny btn-primary" data-action="known" data-mac="${escHtml(d.mac)}" data-name="${escHtml(name)}">Mark Known</button>`;
   return `
-    <div class="dl-row" data-row-mac="${escHtml(d.mac)}" tabindex="0" aria-label="View details for ${escHtml(name)}">
+    <div class="dl-row${d.present === false ? " is-away" : ""}" data-row-mac="${escHtml(d.mac)}" tabindex="0" aria-label="View details for ${escHtml(name)}${d.present === false ? " (last seen " + timeAgo(d.last_seen) + ")" : ""}">
       <div class="dl-c dl-c-status"><span class="dc-status ${dotKlass}"></span></div>
       <div class="dl-c dl-c-icon">${escHtml(d.type_icon || "❔")}</div>
       <div class="dl-c dl-c-name">${escHtml(name)}</div>
@@ -493,7 +493,8 @@ function deviceCard(d) {
   const subBits = [];
   if (d.ip)  subBits.push(d.ip);
   if (d.mac) subBits.push(d.mac);
-  if (d.latency != null) subBits.push(`${d.latency} ms`);
+  if (d.present === false) subBits.push(`last seen ${timeAgo(d.last_seen)}`);
+  else if (d.latency != null) subBits.push(`${d.latency} ms`);
 
   // Confidence-aware classes: gray ("identifying") when we haven't classified yet.
   const unidentified = (d.device_type === "unknown" || (d.type_confidence ?? 0) < 0.3);
@@ -535,7 +536,7 @@ function deviceCard(d) {
     </div>`;
 
   return `
-    <article class="device-card ${klass}" tabindex="0" aria-label="View details for ${escHtml(mainName || d.ip || "device")}">
+    <article class="device-card ${klass}${d.present === false ? " is-away" : ""}" tabindex="0" aria-label="View details for ${escHtml(mainName || d.ip || "device")}">
       <div class="dc-head">
         <div class="dc-typeicon">${escHtml(d.type_icon || "❔")}</div>
         <div class="dc-name">

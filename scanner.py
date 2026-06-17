@@ -51,6 +51,11 @@ console = Console()
 
 # ── Network detection ────────────────────────────────────────────────────────
 
+class NoNetworkError(RuntimeError):
+    """The active interface has no IPv4 address (Wi-Fi off, sleeping, or mid
+    VPN/roam transition). Raised instead of exiting so callers can retry."""
+
+
 _wifi_iface_cache: str | None = None
 
 
@@ -92,8 +97,10 @@ def get_wifi_info() -> tuple[str, str, str]:
         iface = _detect_wifi_iface()      # cached iface went away — re-detect once
         inet = _iface_inet(iface)
     if inet is None:
-        console.print(f"[red]No IP found on {iface} — are you connected to WiFi?[/red]")
-        sys.exit(1)
+        # No IPv4 right now (Wi-Fi off / sleeping / VPN transition). Raise a
+        # catchable error rather than exiting — the menu-bar app keeps running,
+        # keeps its device list, and retries on the next poll.
+        raise NoNetworkError(f"no IPv4 address on {iface}")
 
     _wifi_iface_cache = iface
     ip, netmask = inet
@@ -493,9 +500,14 @@ def probe_device(ip: str, mac: str, open_ports: list[int]) -> dict:
 
 
 def best_fingerprint(hints: dict) -> str:
-    """Pick the most human-readable identification string from probe hints."""
-    for key in ("mdns", "ssdp", "smb", "http_title", "https_title",
-                "http8080_title", "http_server", "https_server"):
+    """Pick the most human-readable identification string from probe hints.
+
+    dhcp_hostname (DHCP option 12) comes first: it's the name the user set on
+    the device, broadcast every time the device requests/renews its lease — the
+    most direct "this is my device's name" signal we can capture passively.
+    """
+    for key in ("dhcp_hostname", "mdns", "ssdp", "smb", "http_title",
+                "https_title", "http8080_title", "http_server", "https_server"):
         val = hints.get(key, "")
         if val and val not in ("—", ""):
             return val
@@ -653,8 +665,9 @@ def do_scan(
             if "permission" in str(e).lower() or "root" in str(e).lower():
                 devices, used_fb = fallback_scan(network, quiet=quiet), True
             else:
-                console.print(f"[red]Scan error: {e}[/red]")
-                sys.exit(1)
+                # Don't exit the process on a transient scan error — let the
+                # caller decide. The menu-bar app logs + retries; the CLI prints.
+                raise
 
     try:
         known_ips  = {d["ip"] for d in devices}
@@ -694,7 +707,11 @@ def main():
     args = parser.parse_args()
 
     console.rule("[bold cyan]Inglorious Network Scanner[/bold cyan]")
-    iface, local_ip, network = get_wifi_info()
+    try:
+        iface, local_ip, network = get_wifi_info()
+    except NoNetworkError:
+        console.print("[red]No IP found — are you connected to WiFi?[/red]")
+        sys.exit(1)
     console.print(
         f"  Interface: [cyan]{iface}[/cyan]   "
         f"IP: [cyan]{local_ip}[/cyan]   "
@@ -706,7 +723,11 @@ def main():
     if args.watch is None:
         # ── Single scan ──────────────────────────────────────────────────────
         t0 = time.time()
-        devices, use_fallback = do_scan(network, args.timeout, use_fallback)
+        try:
+            devices, use_fallback = do_scan(network, args.timeout, use_fallback)
+        except Exception as e:
+            console.print(f"[red]Scan error: {e}[/red]")
+            sys.exit(1)
         if not devices:
             console.print("[red]No devices found.[/red]")
             return
@@ -729,7 +750,12 @@ def main():
         try:
             while True:
                 t0 = time.time()
-                raw, use_fallback = do_scan(network, args.timeout, use_fallback)
+                try:
+                    raw, use_fallback = do_scan(network, args.timeout, use_fallback)
+                except Exception as e:
+                    console.print(f"[red]Scan error: {e}[/red] — retrying in {interval}s")
+                    time.sleep(interval)
+                    continue
                 enriched = enrich(raw, local_ip, skip_vendor=args.no_vendor)
                 elapsed = time.time() - t0
 
