@@ -1450,3 +1450,60 @@ def test_sniffer_captures_dhcp_hostname():
     fs = FakeStore()
     sniffer._handle_packet(pkt, local_mac="11:22:33:44:55:66", threat_list=None, store=fs)
     assert fs.merged.get("AA:BB:CC:DD:EE:FF", {}).get("dhcp_hostname") == "Johns-iPhone"
+
+
+# ── scanner: interface-bound scan + robust fallback (VPN fix) ───────────────
+
+def test_ping_argv_binds_to_iface():
+    from scanner import _ping_argv
+    assert _ping_argv("10.0.0.5", "en0") == ["ping", "-c", "1", "-W", "500", "-b", "en0", "10.0.0.5"]
+    # No iface => byte-identical to the original argv (keeps existing tests green).
+    assert _ping_argv("10.0.0.5", None) == ["ping", "-c", "1", "-W", "500", "10.0.0.5"]
+
+
+def test_arp_scan_binds_to_iface(monkeypatch):
+    import scanner
+    captured = {}
+    monkeypatch.setattr(scanner, "srp", lambda pkt, **kw: (captured.update(kw), ([], []))[1])
+    scanner.arp_scan("192.168.50.0/24", timeout=3, iface="en0")
+    assert captured.get("iface") == "en0"   # ARP sweep is bound to the Wi-Fi iface
+
+
+def test_do_scan_falls_back_on_arp_error_and_still_merges_mdns(monkeypatch):
+    import scanner
+    def boom(*a, **k):
+        raise RuntimeError("BIOCSETIF failed on utun4")
+    monkeypatch.setattr(scanner, "arp_scan", boom)
+    monkeypatch.setattr(scanner, "fallback_scan",
+                        lambda network, quiet=False, iface=None: [{"ip": "192.168.50.2", "mac": "AA:BB:CC:00:00:02"}])
+    monkeypatch.setattr(scanner, "_mdns_browse", lambda iface_ip=None, timeout=2.0: ["192.168.50.9"])
+    monkeypatch.setattr(scanner, "_arp_resolve",
+                        lambda ips, iface=None: [{"ip": "192.168.50.9", "mac": "AA:BB:CC:00:00:09"}])
+    devices, used_fb = scanner.do_scan("192.168.50.0/24", 3, False, iface="en0")
+    macs = {d["mac"] for d in devices}
+    assert used_fb is True
+    assert "AA:BB:CC:00:00:02" in macs            # ping-sweep fallback ran (no re-raise)
+    assert "AA:BB:CC:00:00:09" in macs            # mDNS merge still ran after fallback
+
+
+def test_do_scan_falls_back_on_empty_arp(monkeypatch):
+    import scanner
+    monkeypatch.setattr(scanner, "arp_scan", lambda *a, **k: [])
+    calls = {"fb": 0}
+    def fake_fb(network, quiet=False, iface=None):
+        calls["fb"] += 1
+        return [{"ip": "192.168.50.3", "mac": "AA:BB:CC:00:00:03"}]
+    monkeypatch.setattr(scanner, "fallback_scan", fake_fb)
+    monkeypatch.setattr(scanner, "_mdns_browse", lambda **k: [])
+    devices, used_fb = scanner.do_scan("192.168.50.0/24", 3, False, iface="en0")
+    assert used_fb is True and calls["fb"] == 1
+    assert devices and devices[0]["mac"] == "AA:BB:CC:00:00:03"
+
+
+def test_log_scan_error_rate_limited(capsys):
+    import scanner
+    scanner._last_scan_log.clear()
+    scanner._log_scan_error_once("ARP scan failed (BIOCSETIF failed on utun4); using ping sweep")
+    scanner._log_scan_error_once("ARP scan failed (a different detail); using ping sweep")
+    assert capsys.readouterr().err.count("[scan]") == 1   # same error class logged once
+    scanner._last_scan_log.clear()

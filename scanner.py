@@ -144,10 +144,40 @@ def _parse_arp_table(arp_output: str, only_ips: set[str] | None = None) -> dict[
 
 # ── Scanning ─────────────────────────────────────────────────────────────────
 
-def arp_scan(network: str, timeout: int = 3) -> list[dict]:
+# Rate-limit recurring scan-error logging. A persistent failure (e.g. a VPN
+# breaking the ARP path) must never flood the log with tens of thousands of
+# identical lines, but the first hit and periodic reminders are useful.
+_last_scan_log: dict[str, float] = {}
+_SCAN_LOG_COOLDOWN = 300.0
+
+
+def _log_scan_error_once(msg: str) -> None:
+    key = msg.split("(", 1)[0].strip()   # group by prefix, ignore variable detail
+    now = time.monotonic()
+    if now - _last_scan_log.get(key, 0.0) >= _SCAN_LOG_COOLDOWN:
+        _last_scan_log[key] = now
+        print(f"[scan] {msg}", file=sys.stderr)
+
+
+def arp_scan(network: str, timeout: int = 3, iface: str | None = None) -> list[dict]:
+    """Layer-2 ARP sweep of `network`, bound to `iface` when given.
+
+    Binding to the Wi-Fi interface is essential: scapy's default `conf.iface`
+    follows the default route, which on a full-tunnel VPN is the tunnel
+    (utun*) — a point-to-point interface with no L2, where ARP fails with
+    'BIOCSETIF failed'. Passing the real Wi-Fi interface (e.g. en0) keeps the
+    sweep on the LAN regardless of VPN state.
+    """
     conf.verb = 0
+    if iface:
+        # Best-effort global safeguard; the srp(iface=) kwarg below is what
+        # actually binds the sweep.
+        try:
+            conf.iface = iface
+        except Exception:
+            pass
     pkt = Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=network)
-    answered, _ = srp(pkt, timeout=timeout, verbose=False)
+    answered, _ = srp(pkt, timeout=timeout, verbose=False, iface=iface)
     return [
         {"ip": r.psrc, "mac": _normalize_mac(r.hwsrc)}
         for _, r in answered
@@ -239,7 +269,18 @@ def _mdns_browse(iface_ip: str | None = None, timeout: float = 2.0) -> list[str]
     return sorted(seen)
 
 
-def _arp_resolve(ips: list[str]) -> list[dict]:
+def _ping_argv(ip: str, iface: str | None = None) -> list[str]:
+    """ping argv for a single host. macOS `-b <boundif>` pins ICMP to a specific
+    interface so a ping sweep works even when a VPN owns the default route;
+    omitted => normal OS routing (and keeps the argv byte-identical to before)."""
+    cmd = ["ping", "-c", "1", "-W", "500"]
+    if iface:
+        cmd += ["-b", iface]
+    cmd.append(str(ip))
+    return cmd
+
+
+def _arp_resolve(ips: list[str], iface: str | None = None) -> list[dict]:
     """Ping a list of IPs once to populate the kernel ARP cache, then read
     `arp -a` to extract their MACs. Returns only IPs that ARP-resolved.
 
@@ -251,10 +292,7 @@ def _arp_resolve(ips: list[str]) -> list[dict]:
         return []
 
     def ping(ip: str):
-        subprocess.run(
-            ["ping", "-c", "1", "-W", "500", ip],
-            capture_output=True, check=False,
-        )
+        subprocess.run(_ping_argv(ip, iface), capture_output=True, check=False)
 
     with ThreadPoolExecutor(max_workers=min(20, len(ips))) as ex:
         list(ex.map(ping, ips))
@@ -264,13 +302,13 @@ def _arp_resolve(ips: list[str]) -> list[dict]:
     return [{"ip": ip, "mac": mac} for ip, mac in by_ip.items()]
 
 
-def fallback_scan(network: str, quiet: bool = False) -> list[dict]:
+def fallback_scan(network: str, quiet: bool = False, iface: str | None = None) -> list[dict]:
     if not quiet:
         console.print("[yellow]No root — falling back to ping sweep (slower)…[/yellow]\n")
     hosts = list(IPv4Network(network).hosts())
 
     def ping(ip):
-        subprocess.run(["ping", "-c", "1", "-W", "500", str(ip)], capture_output=True)
+        subprocess.run(_ping_argv(ip, iface), capture_output=True)
 
     with ThreadPoolExecutor(max_workers=100) as ex:
         list(ex.map(ping, hosts))
@@ -645,36 +683,39 @@ def build_table(
 
 def do_scan(
     network: str, timeout: int, use_fallback: bool, quiet: bool = False,
-    iface_ip: str | None = None,
+    iface_ip: str | None = None, iface: str | None = None,
 ) -> tuple[list[dict], bool]:
     """Run one scan cycle. Returns (devices, use_fallback).
 
     Layered discovery:
-      1. ARP scan if we have raw-socket privileges, else ICMP ping sweep.
+      1. ARP scan bound to the Wi-Fi `iface` (works behind a VPN). On ANY ARP
+         failure — or an empty result — fall back to the OS-routed ICMP ping
+         sweep, which reaches the LAN via its subnet route regardless of the
+         default route. We never re-raise: the menu-bar app carries devices
+         across the grace window, so the right behavior is "degrade, don't die".
       2. mDNS service-enumeration sweep that catches devices ignoring ARP/ICMP
          (most modern iPhones, AirPlay receivers, Chromecasts). New IPs are
-         ARP-resolved and merged into the device list. mDNS failures are
-         non-fatal — the ARP/ping result still ships.
+         ARP-resolved and merged. mDNS failures are non-fatal.
     """
     if use_fallback:
-        devices, used_fb = fallback_scan(network, quiet=quiet), True
+        devices, used_fb = fallback_scan(network, quiet=quiet, iface=iface), True
     else:
         try:
-            devices, used_fb = arp_scan(network, timeout), False
+            devices, used_fb = arp_scan(network, timeout, iface=iface), False
         except Exception as e:
-            if "permission" in str(e).lower() or "root" in str(e).lower():
-                devices, used_fb = fallback_scan(network, quiet=quiet), True
-            else:
-                # Don't exit the process on a transient scan error — let the
-                # caller decide. The menu-bar app logs + retries; the CLI prints.
-                raise
+            _log_scan_error_once(f"ARP scan failed ({e}); using ping sweep")
+            devices, used_fb = fallback_scan(network, quiet=quiet, iface=iface), True
+        if not devices and not used_fb:
+            # ARP succeeded but saw nothing (wrong L2 segment, VPN, etc.) — the
+            # OS-routed ping sweep is more reliable, so try it before giving up.
+            devices, used_fb = fallback_scan(network, quiet=quiet, iface=iface), True
 
     try:
         known_ips  = {d["ip"] for d in devices}
         mdns_ips   = [ip for ip in _mdns_browse(iface_ip=iface_ip)
                       if ip not in known_ips and _ip_in_network(ip, network)]
         if mdns_ips:
-            for extra in _arp_resolve(mdns_ips):
+            for extra in _arp_resolve(mdns_ips, iface=iface):
                 if extra["ip"] not in known_ips:
                     devices.append(extra)
                     known_ips.add(extra["ip"])

@@ -253,6 +253,7 @@ class InsApp(rumps.App):
         self._pending_title:  str | None = None
         self._pending_status: tuple | None = None  # (status_title, scan_time_title)
         self._last_scan_error: float = 0.0
+        self._last_traceback_ts: float = 0.0   # rate-limits scan-failure tracebacks
 
         # Static menu items
         self._status    = rumps.MenuItem("Not connected")
@@ -517,7 +518,7 @@ class InsApp(rumps.App):
 
             devices, use_fallback = do_scan(
                 network, timeout=3, use_fallback=use_fallback, quiet=True,
-                iface_ip=local_ip,
+                iface_ip=local_ip, iface=iface,
             )
             devices = enrich(devices, local_ip, skip_vendor=False)
 
@@ -653,11 +654,15 @@ class InsApp(rumps.App):
         except Exception:
             # A recurring scan failure is otherwise invisible — just a silent
             # "!" in the menu bar. Log the traceback to /tmp/ins.err and stamp
-            # the time so the dashboard can surface "scanning is broken".
-            import traceback
-            traceback.print_exc()
+            # the time so the dashboard can surface "scanning is broken" — but
+            # rate-limit it so a persistent failure can't flood the log.
+            now = time.time()
+            if now - self._last_traceback_ts >= 300:
+                self._last_traceback_ts = now
+                import traceback
+                traceback.print_exc()
             with self._lock:
-                self._last_scan_error = time.time()
+                self._last_scan_error = now
             self._set_title(f"{ICON} !")
         finally:
             with self._lock:
