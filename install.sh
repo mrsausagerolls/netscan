@@ -70,8 +70,18 @@ candidate = os.path.join(version_root, "Resources", "Python.app", "Contents", "M
 print(candidate if os.path.isfile(candidate) else exe)
 ')"
     PROG_PY="$LAUNCHER_DST/Contents/MacOS/python$PY_VER"
-    cp "$GUI_PY" "$PROG_PY"
+    # This injected binary is what the LaunchAgent execs — it MUST exist, or the
+    # agent can't start. Fail loudly if the copy doesn't land rather than writing
+    # a plist that points at a missing binary.
+    if ! cp "$GUI_PY" "$PROG_PY"; then
+        echo "error: failed to copy in-app Python to $PROG_PY" >&2
+        exit 1
+    fi
     chmod +x "$PROG_PY"
+    if [[ ! -x "$PROG_PY" ]]; then
+        echo "error: in-app Python missing/not executable at $PROG_PY" >&2
+        exit 1
+    fi
     # Re-sign ad-hoc with the bundle's identifier. macOS TCC keys permissions
     # by the binary's code-signing identity, not its enclosing .app path —
     # without this, requests would still be attributed to the original
