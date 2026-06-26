@@ -263,6 +263,19 @@
       <button id="hook-save" class="btn">Save hook</button>
     </div>
 
+    <div class="pbar"><h2>Sniffer status</h2></div>
+    <div class="section">
+      <p class="help">
+        The passive sniffer powers per-device bandwidth, DNS history, and
+        auto-naming from DHCP broadcasts. It needs one-time BPF access:
+        run <code>tools/enable_sniffer.sh</code> once with <code>sudo</code>, then
+        restart INS.
+      </p>
+      <div class="setting-row">
+        <span id="sniffer-status" class="settings-status">—</span>
+      </div>
+    </div>
+
     <div class="pbar"><h2>Behavior</h2></div>
     <div class="section">
       <label class="setting-row">

@@ -171,8 +171,10 @@ startup). When a newer release exists, an `⬆️ Update available · vX.Y.Z` it
 appears at the top of the menubar.
 
 - **Source install** (via `get.sh`): click the item, confirm, and `update.sh`
-  runs `git pull --ff-only` and restarts the LaunchAgent. Logs to
-  `/tmp/ins-update.log`. Manual: `~/.ins/update.sh`.
+  hard-resets `~/.ins` onto the exact released tag you were shown — so the code
+  matches what you consented to, and a stray local edit can't strand the update;
+  your `.venv` and `data/` are left untouched — then restarts the LaunchAgent.
+  Logs to `/tmp/ins-update.log`. Manual: `~/.ins/update.sh`.
 - **Signed .app** (coming with v2.2): click the item to open the release page;
   download and replace the .app.
 

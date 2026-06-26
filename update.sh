@@ -26,13 +26,19 @@ cd "$PROJ"
   before="$(git rev-parse HEAD)"
 
   # Resolve what to land on. Prefer the exact released tag the user was shown
-  # ("Update to vX.Y.Z"), so the applied code matches their consent. Fall back
-  # to origin/main if the tag isn't fetchable yet.
+  # ("Update to vX.Y.Z"), so the applied code matches their consent. We only
+  # track origin/main when run BY HAND with no tag arg; if the app passed a tag
+  # but it can't be resolved after the fetch, fail closed rather than silently
+  # installing bleeding-edge main HEAD the user never consented to.
   ref="origin/main"
   if [[ -n "$TARGET_TAG" ]]; then
     cand="v${TARGET_TAG#v}"
     if git rev-parse -q --verify "refs/tags/$cand^{commit}" >/dev/null 2>&1; then
       ref="$cand"
+    else
+      echo "release tag $cand not found after fetch — aborting (won't install origin/main)"
+      echo "fail: release $cand not available yet — try again shortly" > "$STATUS"
+      exit 1
     fi
   fi
 
@@ -68,30 +74,31 @@ cd "$PROJ"
     ln -sf "$CLI_SRC" "$HOME/.local/bin/ins" && echo "cli refreshed: $HOME/.local/bin/ins"
   fi
 
-  # When install.sh, the LaunchAgent template, or the launcher .app changed,
-  # re-run install.sh — it regenerates the plist (and re-embeds Python in the
-  # .app for TCC bundle identity) and reloads launchd in one shot. Otherwise
-  # just refresh the launcher and bounce the agent.
-  changed_files="$(git diff --name-only "$before" "$after")"
-  if echo "$changed_files" | grep -qE '^(install\.sh|co\.ingloriouslabs\.netscan\.plist\.tmpl|launcher/)'; then
-    echo "install-affecting files changed — re-running install.sh"
-    ./install.sh
-  else
-    LAUNCHER_SRC="$PROJ/launcher/Inglorious Network Scanner.app"
-    LAUNCHER_DST="/Applications/Inglorious Network Scanner.app"
-    if [[ -d "$LAUNCHER_SRC" && -w "/Applications" ]]; then
-      rm -rf "$LAUNCHER_DST"
-      cp -R "$LAUNCHER_SRC" "$LAUNCHER_DST" && echo "launcher refreshed: $LAUNCHER_DST"
-    fi
-    if [[ -f "$PLIST" ]]; then
-      uid="$(id -u)"
-      launchctl kickstart -k "gui/$uid/$LABEL" 2>/dev/null \
-        || { launchctl unload "$PLIST" 2>/dev/null || true; launchctl load "$PLIST"; }
-      echo "restarted via launchd"
-    else
-      echo "no LaunchAgent installed at $PLIST — start manually"
-    fi
-  fi
-
+  # Record success BEFORE the restart: a successful restart SIGKILLs this app
+  # (and this script's parent), so anything written after the kickstart can race
+  # the teardown. The ERR trap still overwrites this with "fail" if a step below
+  # errors under `set -e`.
   echo "ok: updated $before → $after" > "$STATUS"
+
+  # Decide how to restart. CRITICAL: the installed /Applications bundle's Python
+  # binary (Contents/MacOS/pythonX.Y) is INJECTED + codesigned by install.sh and
+  # is NOT in the git source. The plist execs that binary directly. So a naive
+  # "rm -rf the bundle + cp the source bundle back" would delete the very binary
+  # launchd needs, bricking the app. Therefore: whenever the plist runs the
+  # in-app Python (the default install) — or install-affecting files changed —
+  # re-run install.sh, which re-embeds + re-signs the Python and reloads launchd
+  # in one idempotent shot. Otherwise (venv-Python layout) just bounce the agent.
+  changed_files="$(git diff --name-only "$before" "$after")"
+  if echo "$changed_files" | grep -qE '^(install\.sh|co\.ingloriouslabs\.netscan\.plist\.tmpl|launcher/)' \
+     || grep -q 'Inglorious Network Scanner.app/Contents/MacOS/python' "$PLIST" 2>/dev/null; then
+    echo "re-running install.sh (in-app Python layout or install-affecting change)"
+    ./install.sh
+  elif [[ -f "$PLIST" ]]; then
+    uid="$(id -u)"
+    launchctl kickstart -k "gui/$uid/$LABEL" 2>/dev/null \
+      || { launchctl unload "$PLIST" 2>/dev/null || true; launchctl load "$PLIST"; }
+    echo "restarted via launchd"
+  else
+    echo "no LaunchAgent installed at $PLIST — start manually"
+  fi
 } >> "$LOG" 2>&1

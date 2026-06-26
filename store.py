@@ -345,11 +345,17 @@ class DeviceStore:
         now     = time.time()
         latency = device.get("latency")
         existing = self._qone(
-            "SELECT first_seen, vendor, hostname, last_ip FROM devices WHERE mac=?",
+            "SELECT first_seen, vendor, hostname, last_ip, seen_count FROM devices WHERE mac=?",
             (mac,),
         )
 
-        is_new          = existing is None
+        # "New" means we've never SCANNED this MAC before. The passive sniffer
+        # can pre-create a stub row (seen_count=0) from a DHCP broadcast before
+        # the first ARP sweep touches the device, so don't treat the mere
+        # existence of a row as "seen" — a seen_count==0 stub is still new, or
+        # the new-device security alert would be silently suppressed for exactly
+        # the devices most likely to be genuine joiners.
+        is_new          = existing is None or existing["seen_count"] == 0
         vendor_changed  = None
         new_vendor      = device.get("vendor", "—")
 

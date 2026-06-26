@@ -386,7 +386,8 @@ class InsApp(rumps.App):
             })
         # Triage queue = unknown, non-self devices, ordered newest first.
         triage = sorted(
-            [d for d in enriched if not d["is_known"] and not d["me"]],
+            [d for d in enriched
+             if not d["is_known"] and not d["me"] and d.get("present", True)],
             key=lambda d: -(d.get("first_seen") or 0),
         )
         return {
@@ -404,7 +405,8 @@ class InsApp(rumps.App):
             "alerts":     store.alerts(limit=50),
             "unack_count": store.unack_alert_count(),
             "webhooks":   store.webhooks(),
-            "health":     store.latest_health() or self._compute_and_store_health(enriched),
+            "health":     store.latest_health() or self._compute_and_store_health(
+                              [d for d in enriched if d.get("present", True)]),
             "wan_mappings": wan_all,
             "settings": {
                 "voice_enabled":          store.get_setting("voice_enabled", "0") == "1",
@@ -509,7 +511,13 @@ class InsApp(rumps.App):
                 use_fallback = self._use_fallback
                 prev_net     = self._net
                 self._net    = network
-            if network != prev_net:
+                net_changed  = network != prev_net
+                if net_changed:
+                    # Drop the previous network's devices so none of them get
+                    # carried over (with stale wrong-subnet IPs) into the new
+                    # network's list during the grace window.
+                    self._devices = []
+            if net_changed:
                 # The network identity changed (roamed, switched SSID, or the
                 # subnet changed). Drop the per-IP enrichment caches so a
                 # colliding IP (e.g. 192.168.1.10 on both home and office
@@ -520,7 +528,7 @@ class InsApp(rumps.App):
                 network, timeout=3, use_fallback=use_fallback, quiet=True,
                 iface_ip=local_ip, iface=iface,
             )
-            devices = enrich(devices, local_ip, skip_vendor=False)
+            devices = enrich(devices, local_ip, skip_vendor=False, iface=iface)
 
             # Load the known-device map and the stored-device records ONCE for
             # the whole loop instead of querying is_known/known_name/get_device
@@ -577,6 +585,7 @@ class InsApp(rumps.App):
                 store.update_device_type(d["mac"], dtype, conf)
                 d["device_type"]     = dtype
                 d["type_confidence"] = conf
+                d["ports"]           = stored.get("ports", [])  # for the health score
 
             now = time.time()
             for d in devices:
@@ -595,6 +604,15 @@ class InsApp(rumps.App):
             carried = []
             for pd in prev_devices:
                 if pd["mac"] in cur_macs:
+                    continue
+                if pd.get("me"):
+                    # The host itself is discovered only intermittently (it never
+                    # answers its own ARP sweep). Keep it shown as PRESENT, never
+                    # 💤/away — it's literally this machine, always on the LAN.
+                    pd = dict(pd)
+                    pd["present"]   = True
+                    pd["last_seen"] = now
+                    carried.append(pd)
                     continue
                 last = pd.get("last_seen") or seen0.get(pd["mac"], {}).get("last_seen", 0)
                 if last and (now - last) <= PRESENCE_GRACE:
@@ -620,6 +638,15 @@ class InsApp(rumps.App):
             # Security rules + port scans run on the devices ACTUALLY seen this
             # sweep — carried-over devices carry no new information.
             self._evaluate_and_dispatch_alerts(devices, new_ports_by_mac={})
+
+            # Recompute the health score every scan from the devices PRESENT now
+            # (not carried-away ones, which would keep dragging the score down
+            # after they left). Computing it here also fixes the staleness where
+            # _dash_state's `latest_health() or compute` only ever computed once.
+            try:
+                self._compute_and_store_health(devices)
+            except Exception:
+                pass
 
             # Join detection keys off MAC, not IP: a returning away-device
             # (known MAC) isn't a join, and a genuinely new device isn't missed
@@ -787,12 +814,13 @@ class InsApp(rumps.App):
 
             present = d.get("present", True)
 
-            # Status emoji — 💤 for a device seen recently but missing from the
-            # latest sweep (kept in the list during the grace window).
-            if not present: icon = "💤"
-            elif is_me:     icon = "🔵"
-            elif is_known:  icon = "🟢"
-            else:           icon = "🔴"
+            # Status emoji — is_me always wins (never show your own machine as
+            # away); 💤 for a device seen recently but missing from the latest
+            # sweep (kept in the list during the grace window).
+            if is_me:         icon = "🔵"
+            elif not present: icon = "💤"
+            elif is_known:    icon = "🟢"
+            else:             icon = "🔴"
 
             # Label — same name-resolution order as the dashboard:
             # known_name > probe fingerprint > hostname > vendor > bare IP.
@@ -1021,7 +1049,11 @@ class InsApp(rumps.App):
         threading.Thread(target=self._watch_update_result, daemon=True).start()
 
     def _watch_update_result(self):
-        for _ in range(30):                         # up to ~60s
+        # Poll well past a cold dependency install (scapy + pyobjc can take a few
+        # minutes on a cache miss) — the old ~60s budget could exit before a slow
+        # failure wrote its status, so the failure notification never fired. On
+        # success update.sh restarts us and this daemon thread dies anyway.
+        for _ in range(360):                        # up to ~12 min
             time.sleep(2)
             try:
                 with open("/tmp/ins-update.status") as f:

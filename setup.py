@@ -39,6 +39,11 @@ OPTIONS = {
         "classify", "security", "events", "notify", "webhooks",
     ],
     "excludes": ["tkinter", "unittest", "xmlrpc"],
+    # Bundle the dashboard assets (HTML/CSS/JS + self-hosted fonts) into
+    # Contents/Resources/static so a frozen build serves the real dashboard,
+    # not the bare fallback page. dashboard.py resolves this from a
+    # sys.frozen-aware base.
+    "resources": ["static"],
 }
 
 setup(

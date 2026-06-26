@@ -215,7 +215,7 @@ function paintOverview() {
   const wan     = (STATE.wan_mappings || []).length;
 
   grid.innerHTML = [
-    {label: "Devices online", value: devs.length, kind: "info"},
+    {label: "Devices seen", value: devs.length, kind: "info"},
     {label: "Known",          value: known,       kind: "ok"},
     {label: "Unknown",        value: unknown,     kind: unknown ? "warn" : "ok"},
     {label: "Identified",     value: `${idents} / ${devs.length}`, kind: "info"},
@@ -243,7 +243,7 @@ function paintOverviewAlerts() {
 function deviceMatchesFilter(d) {
   const q = $("#dev-search").value.toLowerCase().trim();
   if (q) {
-    const blob = `${d.ip} ${d.mac} ${d.hostname} ${d.vendor} ${d.known_name} ${d.type_label}`.toLowerCase();
+    const blob = `${d.ip} ${d.mac} ${d.hostname} ${d.vendor} ${d.known_name} ${d.fingerprint} ${d.type_label}`.toLowerCase();
     if (!blob.includes(q)) return false;
   }
   const typeFilter = $("#dev-type-filter").value;
@@ -556,7 +556,8 @@ async function onDeviceAction(e) {
   const mac = el.dataset.mac;
   const action = el.dataset.action;
   if (action === "known") {
-    const name = prompt("Name for this device:", el.dataset.name || "") ?? "";
+    const name = prompt("Name for this device:", el.dataset.name || "");
+    if (name === null) return;   // Cancel aborts — don't mark the device Known
     await api("/api/known/add", { mac, name });
   } else if (action === "unknown") {
     await api("/api/known/remove", { mac });
@@ -713,6 +714,14 @@ $("#drawer-scrim").addEventListener("click", closeExplainer);
 function drawHistory() {
   const canvas = $("#history-chart");
   if (!canvas) return;
+  // Read the live design tokens so the chart matches the rest of the dashboard
+  // (the redesign moved off the old neon-cyan palette). Fall back if unset.
+  const cssVar = (name, fb) =>
+    (getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fb);
+  const accent = cssVar("--accent", "#6BBDC6");
+  const grid   = cssVar("--border", "rgba(255,255,255,.06)");
+  const labelC = cssVar("--text-3", "#8A92A1");
+  const mono   = "10px ui-monospace, 'Geist Mono', monospace";
   const dpr = window.devicePixelRatio || 1;
   const w = canvas.clientWidth, h = canvas.clientHeight;
   canvas.width = w * dpr; canvas.height = h * dpr;
@@ -720,8 +729,8 @@ function drawHistory() {
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, w, h);
   if (!HISTORY.length) {
-    ctx.fillStyle = "#4A5F7A";
-    ctx.font = "11px JetBrains Mono";
+    ctx.fillStyle = labelC;
+    ctx.font = mono;
     ctx.textAlign = "center";
     ctx.fillText("No scan history yet", w / 2, h / 2);
     return;
@@ -733,14 +742,14 @@ function drawHistory() {
   const xs = (i) => padX + (i / (HISTORY.length - 1 || 1)) * innerW;
   const ys = (v) => padY + innerH - ((v - min) / (max - min || 1)) * innerH;
 
-  ctx.strokeStyle = "#1A2438";
+  ctx.strokeStyle = grid;
   ctx.lineWidth = 1;
   for (let i = 0; i <= 4; i++) {
     const y = padY + (innerH * i) / 4;
     ctx.beginPath(); ctx.moveTo(padX, y); ctx.lineTo(w - padX, y); ctx.stroke();
   }
 
-  ctx.strokeStyle = "#00D9F5";
+  ctx.strokeStyle = accent;
   ctx.lineWidth = 1.5;
   ctx.beginPath();
   HISTORY.forEach((p, i) => {
@@ -752,11 +761,13 @@ function drawHistory() {
   ctx.lineTo(xs(HISTORY.length - 1), padY + innerH);
   ctx.lineTo(xs(0), padY + innerH);
   ctx.closePath();
-  ctx.fillStyle = "rgba(0,217,245,.08)";
+  ctx.globalAlpha = 0.08;
+  ctx.fillStyle = accent;
   ctx.fill();
+  ctx.globalAlpha = 1;
 
-  ctx.fillStyle = "#4A5F7A";
-  ctx.font = "10px JetBrains Mono";
+  ctx.fillStyle = labelC;
+  ctx.font = mono;
   ctx.textAlign = "right";
   for (let i = 0; i <= 4; i++) {
     const v = Math.round(max - ((max - min) * i) / 4);
@@ -1072,6 +1083,18 @@ function paintSettings() {
   if (newEl   && document.activeElement !== newEl)   newEl.value     = s.shortcut_on_new_device || "";
   if (altEl   && document.activeElement !== altEl)   altEl.value     = s.shortcut_on_alert || "";
   if (kaEl    && document.activeElement !== kaEl)    kaEl.checked    = !!s.keep_alive;
+
+  const snEl = $("#sniffer-status");
+  if (snEl) {
+    const sn = STATE.sniffer || {};
+    if (sn.running) {
+      snEl.textContent = `✓ Running — ${sn.packets || 0} packets captured`;
+    } else if (sn.reason) {
+      snEl.textContent = `✗ Not active — ${sn.reason}`;
+    } else {
+      snEl.textContent = "✗ Not active — run tools/enable_sniffer.sh with sudo, then restart INS";
+    }
+  }
 }
 
 $("#keep-alive-save")?.addEventListener("click", async () => {
@@ -1170,7 +1193,9 @@ paintHook = function() { _origPaintHook(); paintSettings(); };
 let SSE_STATE = "connecting";   // "live" | "offline"
 
 function startSSE() {
-  if (typeof EventSource === "undefined") return;
+  // No EventSource (or it throws): live push isn't available — reflect that
+  // honestly instead of leaving the pill on a misleading pulsing green "live".
+  if (typeof EventSource === "undefined") { SSE_STATE = "polling"; updateLivePill(); return; }
   try {
     const es = new EventSource("/api/stream");
     const onEvent = () => refreshSoon();
@@ -1187,7 +1212,7 @@ function startSSE() {
       // doesn't flicker amber on every routine reconnect.
       if (es.readyState === EventSource.CLOSED) { SSE_STATE = "offline"; updateLivePill(); }
     };
-  } catch (e) { /* SSE not available; polling fallback covers it */ }
+  } catch (e) { SSE_STATE = "polling"; updateLivePill(); }
 }
 
 // Reflect live-update health in the header pill: green "live" by default,
@@ -1197,10 +1222,17 @@ function updateLivePill() {
   const pill = document.querySelector(".live-pill");
   if (!pill) return;
   let cls = "", label = "live";
-  if (SSE_STATE === "offline") {
+  const epoch = STATE && STATE.last_scan_epoch;
+  const err   = STATE && STATE.last_scan_error;
+  if (err && (!epoch || err >= epoch)) {
+    // The latest scan attempt failed more recently than the last success.
+    cls = "is-offline"; label = "scan error";
+  } else if (SSE_STATE === "offline") {
     cls = "is-offline"; label = "offline";
-  } else if (STATE && STATE.last_scan_epoch) {
-    const age = Date.now() / 1000 - STATE.last_scan_epoch;
+  } else if (SSE_STATE === "polling") {
+    cls = "is-stale"; label = "polling";
+  } else if (epoch) {
+    const age = Date.now() / 1000 - epoch;
     if (age > 120) { cls = "is-stale"; label = "stale"; }
   }
   pill.classList.toggle("is-stale",   cls === "is-stale");

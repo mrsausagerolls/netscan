@@ -29,7 +29,13 @@ PORT = 8765
 MAX_BODY_BYTES = 1_048_576  # 1 MiB
 
 _HERE = Path(__file__).parent.resolve()
-_STATIC_DIR = _HERE / "static"
+if getattr(sys, "frozen", False):
+    # py2app bundle: assets live in Contents/Resources/static (see setup.py
+    # "resources"), not next to this module inside the read-only .app.
+    _RES = os.environ.get("RESOURCEPATH") or str(Path(sys.executable).resolve().parent.parent / "Resources")
+    _STATIC_DIR = Path(_RES) / "static"
+else:
+    _STATIC_DIR = _HERE / "static"
 
 
 def _read_static(rel_path: str) -> bytes | None:
@@ -102,6 +108,14 @@ class _Handler(BaseHTTPRequestHandler):
         if not origin:
             return False
         return any(origin == a or origin.startswith(a + "/") for a in self.allowed_origins)
+
+    @staticmethod
+    def _as_int(v, default: int = 0) -> int:
+        """Coerce a JSON body field to int without raising on bad input."""
+        try:
+            return int(v)
+        except (ValueError, TypeError):
+            return default
 
     def _host_ok(self) -> bool:
         """Reject any request whose Host header isn't one of our loopback names.
@@ -206,6 +220,12 @@ class _Handler(BaseHTTPRequestHandler):
         except (ValueError, TypeError):
             self._send(400, "application/json", b'{"error":"invalid json body"}')
             return
+        # Every endpoint does body.get(...) / body.items(); a JSON array/string/
+        # number parses fine but would raise AttributeError downstream and drop
+        # the connection with no response. Require a JSON object.
+        if not isinstance(body, dict):
+            self._send(400, "application/json", b'{"error":"body must be a json object"}')
+            return
 
         if path == "/api/rescan":
             if self.on_rescan:
@@ -248,7 +268,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send(500, "application/json", json.dumps({"error": str(e)}).encode())
             return
         if path == "/api/alerts/ack":
-            self.store.acknowledge_alert(int(body.get("id", 0)))
+            self.store.acknowledge_alert(self._as_int(body.get("id")))
             self._ok()
             return
         if path == "/api/alerts/ack_all":
@@ -268,12 +288,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._ok()
             return
         if path == "/api/webhooks/remove":
-            self.store.remove_webhook(int(body.get("id", 0)))
+            self.store.remove_webhook(self._as_int(body.get("id")))
             self._ok()
             return
         if path == "/api/webhooks/toggle":
             self.store.set_webhook_enabled(
-                int(body.get("id", 0)), bool(body.get("enabled", False))
+                self._as_int(body.get("id")), bool(body.get("enabled", False))
             )
             self._ok()
             return

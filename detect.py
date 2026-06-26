@@ -76,14 +76,20 @@ def rogue_dhcp_servers(store) -> list[DhcpServer]:
 # ── ARP-spoof / MAC-flap ─────────────────────────────────────────────────────
 
 
-def arp_anomalies(store, window_seconds: int = 3600) -> list[ArpAnomaly]:
-    """Return IPs that have been claimed by multiple MACs in the window.
+def arp_anomalies(store, window_seconds: int = 3600,
+                  flap_window: int = 180) -> list[ArpAnomaly]:
+    """Return IPs claimed by multiple MACs that are answering *simultaneously*.
 
-    Genuine DHCP lease handoff produces *one* MAC change per lease expiry
-    — usually hours apart. Two+ MACs answering for the same IP inside an hour
-    is suspicious.
+    Real ARP-spoofing = two+ MACs answering for one IP at (nearly) the same
+    time. A normal DHCP lease handoff also produces two MACs for one IP within
+    the window, but SEQUENTIALLY — the old lease holder stops being seen, then
+    the new one starts (often minutes-to-hours apart). Flagging that as a
+    "someone is spoofing — change your WiFi password" critical alert is a false
+    positive. So we only flag when the second-most-recent MAC was itself sighted
+    within `flap_window` seconds, i.e. both MACs are still active concurrently.
     """
-    cutoff = time.time() - window_seconds
+    now = time.time()
+    cutoff = now - window_seconds
     rows = store._q(
         "SELECT ip, mac, MAX(ts) AS last FROM sightings "
         "WHERE ts >= ? AND ip IS NOT NULL "
@@ -96,8 +102,12 @@ def arp_anomalies(store, window_seconds: int = 3600) -> list[ArpAnomaly]:
 
     out: list[ArpAnomaly] = []
     for ip, sightings in by_ip.items():
-        if len(sightings) >= 2:
-            sightings.sort(key=lambda x: x[1], reverse=True)
+        if len(sightings) < 2:
+            continue
+        sightings.sort(key=lambda x: x[1], reverse=True)
+        # The 2nd-newest MAC must still be recently active — otherwise this is a
+        # sequential lease handoff, not concurrent spoofing.
+        if (now - sightings[1][1]) <= flap_window:
             out.append(ArpAnomaly(
                 ip=ip, macs=tuple(m for m, _ in sightings),
             ))

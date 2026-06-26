@@ -140,28 +140,36 @@ def _handle_packet(pkt, local_mac: str, threat_list, store) -> None:
     dst_mac = eth.dst.upper() if eth.dst else ""
     n = len(pkt)
 
-    # Direction is "out" for traffic originated by the WiFi host running INS,
-    # "in" for traffic destined to it. For peer-to-peer LAN traffic we count
-    # both ends so neither device looks idle.
+    # Per-device direction, from THAT device's own perspective (not the INS
+    # host's): a device's bytes_in = what it received, bytes_out = what it sent.
+    # When the INS host is one endpoint we know the peer device's role: if INS
+    # sent the frame, the destination device RECEIVED it (its "in"); if INS
+    # received it, the source device SENT it (its "out").
     if src_mac == local_mac:
-        _bump(dst_mac or src_mac, "out", n)
+        if dst_mac and dst_mac != "FF:FF:FF:FF:FF:FF":
+            _bump(dst_mac, "in", n)
     elif dst_mac == local_mac:
-        _bump(src_mac, "in", n)
+        _bump(src_mac, "out", n)
     else:
-        # Peer to peer or broadcast — credit the source as "out".
+        # Peer-to-peer or broadcast — credit the source as "out" (it sent).
         _bump(src_mac, "out", n)
 
-    # DNS extraction: response side gives us the recursive resolver, query
-    # side gives us the asker. We want the asker → record under src_mac.
-    if pkt.haslayer(DNS) and pkt.haslayer(DNSQR):
-        dns = pkt[DNS]
-        if dns.qr == 0 and pkt.haslayer(IP):
-            qname = (pkt[DNSQR].qname or b"").decode("ascii", errors="ignore").rstrip(".")
-            qtype = int(pkt[DNSQR].qtype) if pkt[DNSQR].qtype is not None else 0
-            store.record_dns_query(src_mac, qname, qtype)
-            hit = threat_list.matches(qname) if threat_list else None
-            if hit:
-                _publish_threat_alert(src_mac, qname, hit, store)
+    # DNS extraction: query side gives us the asker → record under src_mac.
+    # Guarded like the DHCP block below: a transient store error (e.g. a SQLite
+    # lock past busy_timeout) must NEVER escape into scapy's prn caller, or
+    # scapy tears down the capture socket and the sniffer silently dies.
+    try:
+        if pkt.haslayer(DNS) and pkt.haslayer(DNSQR):
+            dns = pkt[DNS]
+            if dns.qr == 0 and pkt.haslayer(IP):
+                qname = (pkt[DNSQR].qname or b"").decode("ascii", errors="ignore").rstrip(".")
+                qtype = int(pkt[DNSQR].qtype) if pkt[DNSQR].qtype is not None else 0
+                store.record_dns_query(src_mac, qname, qtype)
+                hit = threat_list.matches(qname) if threat_list else None
+                if hit:
+                    _publish_threat_alert(src_mac, qname, hit, store)
+    except Exception:
+        pass  # never let a per-packet error kill the capture socket
 
     # DHCP fingerprinting — option 55 (Parameter Request List) is the strongest
     # passive OS signal we can collect. The byte sequence differs between iOS,
@@ -190,6 +198,15 @@ def _handle_packet(pkt, local_mac: str, threat_list, store) -> None:
                     # the user set on the phone/laptop), broadcast on lease
                     # request. The strongest passive auto-naming signal.
                     host_name = val.decode("ascii", errors="ignore") if isinstance(val, (bytes, bytearray)) else str(val)
+            # OFFER(2)/ACK(5) are sent BY a DHCP server. Record the server's
+            # (ip, mac) so detect.rogue_dhcp_servers() can flag a second one —
+            # that read-side pipeline (health penalty + critical alert) was
+            # wired up but had no producer until now.
+            if msg_type in (2, 5) and pkt.haslayer(IP):
+                srv_ip  = pkt[IP].src
+                srv_mac = src_mac
+                if srv_ip and srv_mac and srv_mac != local_mac:
+                    store.record_dhcp_server(srv_ip, srv_mac)
             if msg_type in (1, 3) and pkt.haslayer(BOOTP):
                 # BOOTP `chaddr` is the client's hardware address — authoritative
                 # even when the L2 source is a relay or randomised.
@@ -216,8 +233,21 @@ def _handle_packet(pkt, local_mac: str, threat_list, store) -> None:
         _status.packets += 1
 
 
+_threat_alert_cooldown: dict[tuple[str, str], float] = {}
+_THREAT_ALERT_COOLDOWN = 3600.0   # one alert per (device, flagged domain) per hour
+
+
 def _publish_threat_alert(mac: str, qname: str, matched_suffix: str, store) -> None:
-    """Fire a critical alert through the standard events bus."""
+    """Fire a warning alert through the standard events bus, de-duplicated.
+
+    A device polling a flagged domain every ~30s would otherwise spawn thousands
+    of identical alerts/day — each also pushed to the dashboard, voiced aloud,
+    and firing an Apple Shortcut. Collapse to one per (mac, domain) per hour."""
+    key = (mac, matched_suffix)
+    now = time.time()
+    if now - _threat_alert_cooldown.get(key, 0.0) < _THREAT_ALERT_COOLDOWN:
+        return
+    _threat_alert_cooldown[key] = now
     alert_id = store.add_alert(
         kind="dns_threat_match",
         severity="warning",

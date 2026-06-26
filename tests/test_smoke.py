@@ -1357,7 +1357,7 @@ def test_enrich_caches_hostname_and_latency(monkeypatch):
     monkeypatch.setattr(scanner, "get_hostname",
                         lambda ip: (hcalls.__setitem__("n", hcalls["n"] + 1) or f"h-{ip}"))
     monkeypatch.setattr(scanner, "ping_latency",
-                        lambda ip: (pcalls.__setitem__("n", pcalls["n"] + 1) or 1.0))
+                        lambda ip, iface=None: (pcalls.__setitem__("n", pcalls["n"] + 1) or 1.0))
     monkeypatch.setattr(scanner, "get_vendor", lambda mac: "V")
     devs = [{"ip": "10.0.0.5", "mac": "AA:BB:CC:00:00:01"}]
     r1 = scanner.enrich([dict(d) for d in devs], "10.0.0.9")
@@ -1389,7 +1389,7 @@ def test_clear_caches_forces_fresh_resolution_after_roaming(monkeypatch):
     scanner.clear_caches()
     names = iter(["old-network-device", "new-network-device"])
     monkeypatch.setattr(scanner, "get_hostname", lambda ip: next(names))
-    monkeypatch.setattr(scanner, "ping_latency", lambda ip: 1.0)
+    monkeypatch.setattr(scanner, "ping_latency", lambda ip, iface=None: 1.0)
     monkeypatch.setattr(scanner, "get_vendor", lambda mac: "V")
     dev = [{"ip": "192.168.1.10", "mac": "AA:BB:CC:00:00:01"}]
     r1 = scanner.enrich([dict(d) for d in dev], "192.168.1.1")
@@ -1507,3 +1507,63 @@ def test_log_scan_error_rate_limited(capsys):
     scanner._log_scan_error_once("ARP scan failed (a different detail); using ping sweep")
     assert capsys.readouterr().err.count("[scan]") == 1   # same error class logged once
     scanner._last_scan_log.clear()
+
+
+# ── audit-round regressions (v2.4.16) ───────────────────────────────────────
+
+def test_touch_after_sniffer_stub_is_still_new(tmp_path):
+    """A sniffer-created stub row (seen_count=0) must NOT suppress the
+    new-device alert: the first real touch should report _is_new=True."""
+    import store
+    s = store.DeviceStore(data_dir=tmp_path)
+    s.merge_fingerprint("AA:BB:CC:00:00:01", {"dhcp_hostname": "Johns-iPhone"})  # stub, seen_count=0
+    out = s.touch({"mac": "AA:BB:CC:00:00:01", "ip": "10.0.0.5",
+                   "vendor": "Apple", "hostname": "—"})
+    assert out["_is_new"] is True
+    # The very next touch is no longer new.
+    out2 = s.touch({"mac": "AA:BB:CC:00:00:01", "ip": "10.0.0.5",
+                    "vendor": "Apple", "hostname": "—"})
+    assert out2["_is_new"] is False
+
+
+def test_arp_anomalies_ignores_sequential_dhcp_handoff(tmp_path):
+    """A normal lease handoff (old MAC stopped being seen long ago, new MAC
+    active now) must NOT raise a critical ARP-spoof anomaly; only concurrent
+    MACs should."""
+    import store, detect, time
+    s = store.DeviceStore(data_dir=tmp_path)
+    now = time.time()
+    # Old lease holder last seen 20 min ago; new holder seen now.
+    s._db.execute("INSERT INTO sightings(mac,ip,ts,latency_ms) VALUES(?,?,?,?)",
+                  ("AA:AA:AA:AA:AA:AA", "10.0.0.5", now - 1200, None))
+    s._db.execute("INSERT INTO sightings(mac,ip,ts,latency_ms) VALUES(?,?,?,?)",
+                  ("BB:BB:BB:BB:BB:BB", "10.0.0.5", now, None))
+    assert not any(a.ip == "10.0.0.5" for a in detect.arp_anomalies(s))
+    # But two MACs seen concurrently (both now) IS flagged.
+    s._db.execute("INSERT INTO sightings(mac,ip,ts,latency_ms) VALUES(?,?,?,?)",
+                  ("CC:CC:CC:CC:CC:CC", "10.0.0.9", now, None))
+    s._db.execute("INSERT INTO sightings(mac,ip,ts,latency_ms) VALUES(?,?,?,?)",
+                  ("DD:DD:DD:DD:DD:DD", "10.0.0.9", now, None))
+    assert any(a.ip == "10.0.0.9" for a in detect.arp_anomalies(s))
+
+
+def test_do_scan_does_not_latch_into_fallback(monkeypatch):
+    """use_fallback is a soft hint: do_scan must still attempt ARP even when
+    told to fall back, so it auto-recovers after a transient miss."""
+    import scanner
+    monkeypatch.setattr(scanner, "arp_scan",
+                        lambda *a, **k: [{"ip": "10.0.0.5", "mac": "AA:BB:CC:00:00:05"}])
+    monkeypatch.setattr(scanner, "_mdns_browse", lambda **k: [])
+    devices, used_fb = scanner.do_scan("10.0.0.0/24", 2, True, iface="en0")  # hint=True
+    assert used_fb is False and len(devices) == 1   # ARP was tried despite the hint
+
+
+def test_get_backend_tolerates_bad_router_ints(tmp_path):
+    import store, routerctl
+    s = store.DeviceStore(data_dir=tmp_path)
+    for k, v in {"router_kind": "openwrt", "router_host": "10.0.0.1",
+                 "router_user": "root", "router_ssh_port": "22a",
+                 "router_iface": "x"}.items():
+        s.set_setting(k, v)
+    b = routerctl.get_backend(s)            # must not raise ValueError
+    assert b.ssh_port == 22 and b.iface_idx == 0

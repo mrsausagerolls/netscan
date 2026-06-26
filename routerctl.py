@@ -273,8 +273,15 @@ def get_backend(store) -> Backend:
         return UnifiBackend(host, user, pwd,
                             site=store.get_setting("router_site", "default") or "default")
     if kind == "openwrt" and host and user:
-        port = int(store.get_setting("router_ssh_port", "22") or "22")
-        idx  = int(store.get_setting("router_iface", "0") or "0")
+        # Tolerate a typo'd / non-numeric stored port or iface index — a bad
+        # setting must never raise out of the /api/router/* endpoints (which
+        # only guard against RouterError), so fall back to the defaults.
+        def _int(key: str, default: int) -> int:
+            try:
+                return int(store.get_setting(key, str(default)) or default)
+            except (ValueError, TypeError):
+                return default
         return OpenWrtBackend(host, user, pwd or None,
-                              ssh_port=port, iface_index=idx)
+                              ssh_port=_int("router_ssh_port", 22),
+                              iface_index=_int("router_iface", 0))
     return NoopBackend()

@@ -269,11 +269,11 @@ def _mdns_browse(iface_ip: str | None = None, timeout: float = 2.0) -> list[str]
     return sorted(seen)
 
 
-def _ping_argv(ip: str, iface: str | None = None) -> list[str]:
+def _ping_argv(ip: str, iface: str | None = None, wait_ms: int = 500) -> list[str]:
     """ping argv for a single host. macOS `-b <boundif>` pins ICMP to a specific
     interface so a ping sweep works even when a VPN owns the default route;
     omitted => normal OS routing (and keeps the argv byte-identical to before)."""
-    cmd = ["ping", "-c", "1", "-W", "500"]
+    cmd = ["ping", "-c", "1", "-W", str(wait_ms)]
     if iface:
         cmd += ["-b", iface]
     cmd.append(str(ip))
@@ -381,9 +381,12 @@ def get_hostname(ip: str) -> str:
         return "—"
 
 
-def ping_latency(ip: str) -> float | None:
+def ping_latency(ip: str, iface: str | None = None) -> float | None:
+    # Bind to the Wi-Fi interface like every other probe — otherwise ICMP to LAN
+    # IPs follows the default route into the VPN tunnel and every device reads
+    # blank. 1000ms wait for a reply.
     result = subprocess.run(
-        ["ping", "-c", "1", "-W", "1000", ip],
+        _ping_argv(ip, iface, wait_ms=1000),
         capture_output=True, text=True,
     )
     m = re.search(r"time[<=](\d+\.?\d*)", result.stdout)
@@ -586,13 +589,15 @@ def _resolve_stale(ips: list[str], fn, cache: dict, ttl: float,
     ex.shutdown(wait=False)   # don't block on a stuck resolver
 
 
-def enrich(devices: list[dict], local_ip: str, skip_vendor: bool = False) -> list[dict]:
+def enrich(devices: list[dict], local_ip: str, skip_vendor: bool = False,
+           iface: str | None = None) -> list[dict]:
     """Attach vendor / hostname / latency / me to each device.
 
     Vendor is memoized per MAC; reverse-DNS and latency are resolved only when
     their per-IP cache entry is missing or stale, so a steady-state rescan does
     almost no network work — the expensive resolution happens once, then is
-    reused until the TTL expires.
+    reused until the TTL expires. Latency pings are bound to `iface` so they work
+    behind a VPN.
     """
     for d in devices:
         d["vendor"] = "—" if skip_vendor else get_vendor(d["mac"])
@@ -601,8 +606,11 @@ def enrich(devices: list[dict], local_ip: str, skip_vendor: bool = False) -> lis
     ips = [d["ip"] for d in devices]
     _resolve_stale(ips, get_hostname, _hostname_cache, _HOSTNAME_TTL,
                    timeout=1.5, default="—")
-    _resolve_stale(ips, ping_latency, _latency_cache, _LATENCY_TTL,
-                   timeout=2.0, default=None)
+    # Batch deadline > the 1000ms ping wait so a genuinely unreachable host
+    # resolves to None within the window (and the cache records None) rather
+    # than retaining a stale healthy latency forever.
+    _resolve_stale(ips, lambda ip: ping_latency(ip, iface), _latency_cache,
+                   _LATENCY_TTL, timeout=3.0, default=None)
 
     for d in devices:
         h = _hostname_cache.get(d["ip"])
@@ -685,7 +693,7 @@ def do_scan(
     network: str, timeout: int, use_fallback: bool, quiet: bool = False,
     iface_ip: str | None = None, iface: str | None = None,
 ) -> tuple[list[dict], bool]:
-    """Run one scan cycle. Returns (devices, use_fallback).
+    """Run one scan cycle. Returns (devices, used_fallback).
 
     Layered discovery:
       1. ARP scan bound to the Wi-Fi `iface` (works behind a VPN). On ANY ARP
@@ -696,19 +704,32 @@ def do_scan(
       2. mDNS service-enumeration sweep that catches devices ignoring ARP/ICMP
          (most modern iPhones, AirPlay receivers, Chromecasts). New IPs are
          ARP-resolved and merged. mDNS failures are non-fatal.
+
+    `use_fallback` is a SOFT HINT only — we always try the (interface-bound) ARP
+    sweep first and never latch permanently into the slower ping sweep. So a
+    transient ARP miss, a VPN flap, or a recovered LAN path is picked up on the
+    very next scan. The returned flag just reports what THIS sweep used.
     """
-    if use_fallback:
-        devices, used_fb = fallback_scan(network, quiet=quiet, iface=iface), True
-    else:
+    def _safe_fallback():
         try:
-            devices, used_fb = arp_scan(network, timeout, iface=iface), False
+            return fallback_scan(network, quiet=quiet, iface=iface)
         except Exception as e:
-            _log_scan_error_once(f"ARP scan failed ({e}); using ping sweep")
-            devices, used_fb = fallback_scan(network, quiet=quiet, iface=iface), True
-        if not devices and not used_fb:
-            # ARP succeeded but saw nothing (wrong L2 segment, VPN, etc.) — the
-            # OS-routed ping sweep is more reliable, so try it before giving up.
-            devices, used_fb = fallback_scan(network, quiet=quiet, iface=iface), True
+            _log_scan_error_once(f"ping-sweep fallback failed ({e})")
+            return []
+
+    try:
+        devices = arp_scan(network, timeout, iface=iface)
+        used_fb = False
+    except Exception as e:
+        _log_scan_error_once(f"ARP scan failed ({e}); using ping sweep")
+        devices, used_fb = _safe_fallback(), True
+    if not devices and not used_fb:
+        # ARP returned empty WITHOUT raising — the OS-routed ping sweep is more
+        # reliable, so try it before giving up. (When ARP raised we already ran
+        # the fallback above; `not used_fb` avoids a redundant second sweep.)
+        fb = _safe_fallback()
+        if fb:
+            devices, used_fb = fb, True
 
     try:
         known_ips  = {d["ip"] for d in devices}
