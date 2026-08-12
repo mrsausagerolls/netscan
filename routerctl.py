@@ -34,6 +34,8 @@ Configuration lives in the store's `settings` table under namespaced keys:
 from __future__ import annotations
 
 import json
+import re
+import shlex
 import ssl
 import subprocess
 import urllib.error
@@ -43,6 +45,22 @@ import urllib.request
 
 class RouterError(RuntimeError):
     """Backend couldn't complete the requested action."""
+
+
+_MAC_RE = re.compile(r"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$")
+
+
+def validate_mac(mac: str) -> str:
+    """Return the canonical lowercase MAC, or raise RouterError if malformed.
+
+    Every backend builds a remote command (SSH shell script on OpenWrt, REST
+    body on Unifi) from this value, so we reject anything that isn't a canonical
+    colon-separated MAC before it can reach a shell — the MAC ultimately
+    originates from scanned/attacker-influenceable ARP data."""
+    m = (mac or "").strip()
+    if not _MAC_RE.match(m):
+        raise RouterError(f"Invalid MAC address: {mac!r}")
+    return m.lower()
 
 
 # ── Base ────────────────────────────────────────────────────────────────────
@@ -143,9 +161,10 @@ class UnifiBackend(Backend):
         raise RouterError("Unifi login failed at both /api/auth/login and /api/login")
 
     def _stamgr(self, cmd: str, mac: str) -> None:
+        mac = validate_mac(mac)
         self._login()
         path = f"/api/s/{self.site}/cmd/stamgr"
-        self._request("POST", path, {"cmd": cmd, "mac": mac.lower()})
+        self._request("POST", path, {"cmd": cmd, "mac": mac})
 
     def block(self, mac: str) -> None:
         self._stamgr("block-sta", mac)
@@ -228,26 +247,35 @@ class OpenWrtBackend(Backend):
 
     def _write_maclist(self, macs: list[str]) -> None:
         unique = sorted({m.lower() for m in macs if m})
-        joined = " ".join(unique)
-        # set macfilter mode + maclist, commit, reload wifi
+        path = self._macfilter_path()
+        # One `uci add_list` per MAC. `uci add_list` appends exactly ONE list
+        # element, so the previous single add_list of a space-joined string
+        # stored ALL blocked MACs as one bogus entry ("aa:.. bb:..") that
+        # hostapd's macfilter can't parse — silently disabling the filter for
+        # everyone once a second device was blocked. Each MAC is shlex-quoted as
+        # defense-in-depth (block/unblock already validate the format).
+        adds = "".join(
+            f"uci add_list {path}.maclist={shlex.quote(m)} && " for m in unique
+        )
         script = (
-            f"uci set {self._macfilter_path()}.macfilter='deny' && "
-            f"uci -q delete {self._macfilter_path()}.maclist; "
-            + (f"uci add_list {self._macfilter_path()}.maclist='{joined}' && "
-               if joined else "")
-            + f"uci commit wireless && wifi reload"
+            f"uci set {path}.macfilter='deny' && "
+            f"uci -q delete {path}.maclist; "
+            + adds
+            + "uci commit wireless && wifi reload"
         )
         self._ssh(script)
 
     def block(self, mac: str) -> None:
+        mac = validate_mac(mac)
         macs = self._read_maclist()
-        if mac.lower() in [m.lower() for m in macs]:
+        if mac in [m.lower() for m in macs]:
             return
-        macs.append(mac.lower())
+        macs.append(mac)
         self._write_maclist(macs)
 
     def unblock(self, mac: str) -> None:
-        macs = [m for m in self._read_maclist() if m.lower() != mac.lower()]
+        mac = validate_mac(mac)
+        macs = [m for m in self._read_maclist() if m.lower() != mac]
         self._write_maclist(macs)
 
     def test(self) -> dict:
@@ -270,8 +298,14 @@ def get_backend(store) -> Backend:
     user = store.get_setting("router_user", "")
     pwd  = store.get_setting("router_pass", "")
     if kind == "unifi" and host and user and pwd:
+        # TLS verification is off by default because Unifi controllers ship a
+        # self-signed cert; users who front theirs with a real CA can opt into
+        # full verification (closing the LAN-MITM credential-theft window) by
+        # setting router_verify_tls=1.
+        verify_tls = store.get_setting("router_verify_tls", "0") == "1"
         return UnifiBackend(host, user, pwd,
-                            site=store.get_setting("router_site", "default") or "default")
+                            site=store.get_setting("router_site", "default") or "default",
+                            verify_tls=verify_tls)
     if kind == "openwrt" and host and user:
         # Tolerate a typo'd / non-numeric stored port or iface index — a bad
         # setting must never raise out of the /api/router/* endpoints (which

@@ -1,7 +1,12 @@
-scapy>=2.5.0
-rich>=13.0.0
-mac-vendor-lookup>=0.1.11
-rumps>=0.4.0
-pyobjc-framework-CoreWLAN>=10.0
-pyobjc-framework-CoreLocation>=10.0
-pyobjc-framework-Cocoa>=10.0
+# Bounded to a compatible major range on each dependency. get.sh and update.sh
+# both `pip install -r requirements.txt` with no lockfile, so an open lower
+# bound would let a fresh install (or a dep refresh during an update) pull a
+# backward-incompatible upstream major — a curl|bash supply-chain foot-gun in a
+# no-telemetry, auto-updating app. Raise a ceiling deliberately after testing.
+scapy>=2.5.0,<3
+rich>=13.0.0,<15
+mac-vendor-lookup>=0.1.11,<1
+rumps>=0.4.0,<1
+pyobjc-framework-CoreWLAN>=10.0,<12
+pyobjc-framework-CoreLocation>=10.0,<12
+pyobjc-framework-Cocoa>=10.0,<12

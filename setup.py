@@ -34,9 +34,16 @@ OPTIONS = {
         "CoreLocation",
         "SystemConfiguration",
     ],
+    # Every first-party module, including the lazily-imported ones (routerctl,
+    # launchd_agent, wifi, threats are `import`ed inside functions/handlers, and
+    # igd/detect/health/sniffer/actions off app.py). py2app's static modulegraph
+    # can miss lazy imports, so list them explicitly or a frozen build crashes
+    # the first time it hits one.
     "includes": [
         "scanner", "store", "dashboard", "wol", "updater", "version",
         "classify", "security", "events", "notify", "webhooks",
+        "detect", "health", "igd", "sniffer", "routerctl",
+        "launchd_agent", "actions", "threats", "wifi",
     ],
     "excludes": ["tkinter", "unittest", "xmlrpc"],
     # Bundle the dashboard assets (HTML/CSS/JS + self-hosted fonts) into

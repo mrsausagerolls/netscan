@@ -46,22 +46,34 @@ def _osascript_notify(title: str, message: str, subtitle: str = ""):
         parts.append(f"subtitle {q(subtitle)}")
     script = " ".join(parts)
 
+    # Fire-and-forget: osascript is spawned detached rather than waited on.
+    # notify_alert can be published from the scan loop AND the packet-capture
+    # thread (threat alerts), and a synchronous subprocess.run blocked those
+    # latency-sensitive threads for up to its timeout — a stalled capture thread
+    # stops draining scapy's bounded queue and drops packets. Popen returns
+    # immediately; the banner still appears.
     try:
-        subprocess.run(
+        subprocess.Popen(
             ["osascript", "-e", script],
-            timeout=3, check=False,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True, close_fds=True,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (FileNotFoundError, OSError):
         pass
 
 
 def _emit(title: str, message: str, severity: str = "info") -> bool:
-    """Throttle + dedup gate. Returns True if a banner was actually sent."""
+    """Throttle + dedup gate. Returns True if a banner was actually sent.
+
+    Critical alerts bypass the 30s inter-banner interval — the module promises
+    (docstring + coalescing comment) that criticals always fire individually and
+    can't be missed. Without this exemption a critical arriving within 30s of any
+    prior banner (e.g. right after a coalesced 'N new devices joined' burst) was
+    silently dropped."""
     global _last_emit_ts
     now = time.time()
     with _lock:
-        if now - _last_emit_ts < _MIN_INTERVAL_S:
+        if severity != "critical" and now - _last_emit_ts < _MIN_INTERVAL_S:
             return False
         _last_emit_ts = now
 
@@ -117,7 +129,6 @@ def notify_alert(alert: dict) -> bool:
         last = _recent.get(key, 0)
         if now - last < _DEDUP_WINDOW_S:
             return False
-        _recent[key] = now
         cutoff = now - _DEDUP_WINDOW_S
         for k in [k for k, t in _recent.items() if t < cutoff]:
             _recent.pop(k, None)
@@ -130,6 +141,7 @@ def notify_alert(alert: dict) -> bool:
     if kind in _COALESCE_KINDS and severity == "info":
         global _burst_timer
         with _lock:
+            _recent[key] = now   # queued for display — count it as handled
             _burst_queue.append(alert)
             if _burst_timer is None:
                 _burst_timer = threading.Timer(_BURST_WINDOW_S, _flush_burst)
@@ -137,6 +149,15 @@ def notify_alert(alert: dict) -> bool:
                 _burst_timer.start()
         return True
 
-    return _emit(alert.get("title", "Alert"),
+    sent = _emit(alert.get("title", "Alert"),
                  alert.get("message", ""),
                  severity)
+    # Only stamp the per-key dedup window when the banner was ACTUALLY shown.
+    # Stamping before _emit meant a banner the 30s interval throttle dropped was
+    # also dedup-suppressed for the next 5 minutes and never retried — so a
+    # non-critical alert could be lost entirely. Now a throttled alert stays
+    # eligible and fires on a later tick once the interval clears.
+    if sent:
+        with _lock:
+            _recent[key] = now
+    return sent

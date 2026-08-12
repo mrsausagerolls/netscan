@@ -55,11 +55,18 @@ def _default_data_dir() -> Path:
 class ThreatList:
     """In-memory threat list with mtime-driven reload."""
 
+    # matches() is called once per captured DNS packet on the sniffer's capture
+    # thread, so it must not touch the filesystem every call. We stat() for a
+    # changed mtime at most this often; edits are still picked up within a few
+    # seconds.
+    _CHECK_INTERVAL = 5.0
+
     def __init__(self, path: Path | None = None):
         self.path = path or (_default_data_dir() / "threats.txt")
         self._lock = threading.Lock()
         self._domains: set[str] = set()
         self._mtime: float = 0.0
+        self._last_check: float = 0.0
         self._ensure_seed_file()
         self._load_locked()
 
@@ -96,7 +103,20 @@ class ThreatList:
             self._mtime = mtime
 
     def reload_if_stale(self):
-        """Cheap — only re-reads when the file's mtime changed."""
+        """Cheap — only re-reads when the file's mtime changed. Public callers
+        (and domains()) get an immediate check."""
+        self._load_locked()
+
+    def _maybe_reload(self):
+        """Throttled reload for the packet hot path: stat() for a changed mtime
+        at most once every _CHECK_INTERVAL seconds. matches() runs per DNS
+        packet on the capture thread, so a stat() syscall per call would
+        serialize capture on the filesystem."""
+        now = time.monotonic()
+        with self._lock:
+            if now - self._last_check < self._CHECK_INTERVAL:
+                return
+            self._last_check = now
         self._load_locked()
 
     def domains(self) -> set[str]:
@@ -109,14 +129,18 @@ class ThreatList:
 
         Matches exact OR suffix-with-dot. So `tracker.example` matches both
         `tracker.example` and `foo.tracker.example`, but NOT `evil-tracker.example`.
+
+        Uses the throttled reload and iterates the domain set in place under the
+        lock (no per-call copy) — this is the packet hot path.
         """
         q = (qname or "").strip().lower().rstrip(".")
         if not q:
             return None
-        domains = self.domains()
-        if q in domains:
-            return q
-        for d in domains:
-            if q.endswith("." + d):
-                return d
+        self._maybe_reload()
+        with self._lock:
+            if q in self._domains:
+                return q
+            for d in self._domains:
+                if q.endswith("." + d):
+                    return d
         return None

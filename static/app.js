@@ -68,7 +68,12 @@ const ALERT_HELP = [
 
 let STATE   = null;
 let HISTORY = [];
-let CURRENT_TAB = location.hash.replace("#", "") || "overview";
+const TABS = ["overview", "devices", "triage", "alerts", "history", "wifi", "settings"];
+// Derive the initial tab from the hash, but fall back to overview for an
+// unknown hash (stale bookmark, renamed tab) — otherwise showTab hides every
+// section and activates no nav button, leaving a blank page under the header.
+let CURRENT_TAB = location.hash.replace("#", "");
+if (!TABS.includes(CURRENT_TAB)) CURRENT_TAB = "overview";
 
 // Element focused before an overlay opened, so focus can be returned on close.
 let _lastFocus = null;
@@ -77,13 +82,66 @@ function _restoreFocus() {
   _lastFocus = null;
 }
 
+// ── modal focus management ────────────────────────────────────────────────
+// The device drawer, alert drawer and onboarding overlay all declare
+// role="dialog" aria-modal="true", but nothing enforced it: Tab walked straight
+// out of the dialog into the still-focusable nav and cards behind the scrim.
+// We make the background inert while any dialog is open and wrap Tab within the
+// topmost one.
+function _topmostDialog() {
+  for (const id of ["#onboarding", "#device-drawer", "#alert-drawer"]) {
+    const el = $(id);
+    if (el && !el.hidden) return el;
+  }
+  return null;
+}
+const _INERT_SELECTORS = ["header", ".hnav-bar", ".ssid-banner", "main", ".page-footer"];
+function _syncModalState() {
+  const open = _topmostDialog() !== null;
+  _INERT_SELECTORS.forEach(sel => $$(sel).forEach(el => {
+    if (open) el.setAttribute("inert", "");
+    else      el.removeAttribute("inert");
+  }));
+}
+function _focusables(container) {
+  return Array.from(container.querySelectorAll(
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), ' +
+    'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  )).filter(el => el.offsetParent !== null);
+}
+function _trapTab(e) {
+  const dlg = _topmostDialog();
+  if (!dlg) return;
+  const f = _focusables(dlg);
+  if (!f.length) return;
+  const first = f[0], last = f[f.length - 1];
+  if (!dlg.contains(document.activeElement)) {
+    e.preventDefault(); first.focus();
+  } else if (e.shiftKey && document.activeElement === first) {
+    e.preventDefault(); last.focus();
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault(); first.focus();
+  }
+}
+
 // ── tab switching ─────────────────────────────────────────────────────────
 function showTab(name) {
+  if (!TABS.includes(name)) name = "overview";
   CURRENT_TAB = name;
   history.replaceState(null, "", `#${name}`);
-  $$(".navbtn").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
+  $$(".navbtn").forEach(b => {
+    const active = b.dataset.tab === name;
+    b.classList.toggle("active", active);
+    // Expose the selected view to assistive tech (the buttons otherwise all
+    // read as identical unlabeled "button"s).
+    if (active) b.setAttribute("aria-current", "page");
+    else        b.removeAttribute("aria-current");
+  });
   $$(".tab").forEach(t => t.hidden = t.id !== `tab-${name}`);
   if (name === "history") loadHistory();
+  // Paint the now-visible tab's body immediately — refresh() only paints the
+  // active tab on each tick, so a freshly-shown tab needs a paint here.
+  if (STATE) paintActiveTab();
 }
 $$(".navbtn").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
 
@@ -99,25 +157,51 @@ const escHtml = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
 
 // ── refresh loop ──────────────────────────────────────────────────────────
+// Paint only the body of the currently-visible tab. Every painter does a full
+// innerHTML rebuild + listener re-attach, so painting all seven tabs on every
+// scan tick (and every coalesced SSE burst) was pure DOM thrash for hidden
+// content. showTab() paints a tab when it becomes visible; refresh() keeps the
+// visible one live.
+function paintActiveTab() {
+  switch (CURRENT_TAB) {
+    case "overview": paintHealth(); paintOverview(); paintOverviewAlerts(); break;
+    case "devices":  paintDevices(); break;
+    case "triage":   paintTriage(); break;
+    case "alerts":   paintAlerts(); break;
+    case "history":  paintKnown(); loadHistory(); break;
+    case "settings": paintWebhooks(); paintHook(); break;
+    // "wifi" has no state-driven body (its list is populated by an explicit scan).
+  }
+}
+
 async function refresh() {
   try {
     // Only /api/state on the hot path. The (up-to-5000-row) scan history is
     // fetched lazily by loadHistory() when the History tab is actually shown,
     // not on every scan tick.
     STATE = await fetch("/api/state").then(r => r.json());
-    paintHeader();
-    paintHealth();
-    paintOverview();
-    paintDevices();
-    paintTriage();
-    paintAlerts();
-    paintOverviewAlerts();
-    paintKnown();
-    paintWebhooks();
-    paintHook();
+    paintHeader();          // header stats + nav badges — always
+    announceNewAlerts();    // screen-reader live region — always
+    paintActiveTab();       // only the visible tab's body
     updateLivePill();
-    if (CURRENT_TAB === "history") loadHistory();
   } catch (e) { /* network blip; try again next tick */ }
+}
+
+// Announce a rise in the unacknowledged-alert count to screen readers via the
+// aria-live region. Only speaks the delta on an increase so it isn't chatty on
+// every re-render.
+let _prevUnack = null;
+function announceNewAlerts() {
+  const el = document.getElementById("a11y-announce");
+  if (!el || !STATE) return;
+  const n = STATE.unack_count || 0;
+  if (_prevUnack !== null && n > _prevUnack) {
+    const delta  = n - _prevUnack;
+    const newest = (STATE.alerts || [])[0];
+    el.textContent = `${delta} new security alert${delta === 1 ? "" : "s"}` +
+      (newest && newest.title ? `: ${newest.title}` : "") + ".";
+  }
+  _prevUnack = n;
 }
 
 // Coalesce bursty SSE events (one scan can fire scan.completed + several
@@ -386,16 +470,21 @@ function sortedForList(devices) {
 }
 
 function paintDevices() {
-  // Rebuild type filter once per refresh to reflect newly-classified types.
-  const seenTypes = new Set(STATE.devices.map(d => d.device_type).filter(Boolean));
+  // Rebuild the type filter only when the set of seen types actually changes,
+  // and never while the user is interacting with it — rebuilding collapses an
+  // open native dropdown and clobbers an in-progress keyboard selection.
   const sel = $("#dev-type-filter");
-  const prev = sel.value;
-  sel.innerHTML = `<option value="">All types</option>` +
-    [...seenTypes].sort().map(t => {
-      const ex = STATE.devices.find(d => d.device_type === t);
-      return `<option value="${escHtml(t)}">${escHtml(ex?.type_icon || "")} ${escHtml(ex?.type_label || t)}</option>`;
-    }).join("");
-  if ([...seenTypes].includes(prev)) sel.value = prev;
+  const seenTypes = [...new Set(STATE.devices.map(d => d.device_type).filter(Boolean))].sort();
+  const currentOpts = Array.from(sel.options).map(o => o.value).filter(Boolean).sort();
+  if (currentOpts.join(",") !== seenTypes.join(",") && document.activeElement !== sel) {
+    const prev = sel.value;
+    sel.innerHTML = `<option value="">All types</option>` +
+      seenTypes.map(t => {
+        const ex = STATE.devices.find(d => d.device_type === t);
+        return `<option value="${escHtml(t)}">${escHtml(ex?.type_icon || "")} ${escHtml(ex?.type_label || t)}</option>`;
+      }).join("");
+    if (seenTypes.includes(prev)) sel.value = prev;
+  }
 
   // Ensure the right view container is visible (handles first paint).
   $("#device-grid").hidden = DEVICE_VIEW !== "grid";
@@ -700,11 +789,13 @@ function openExplainer(kind) {
   `;
   $("#alert-drawer").hidden = false;
   $("#drawer-scrim").hidden = false;
+  _syncModalState();
   $("#drawer-close").focus();
 }
 function closeExplainer() {
   $("#alert-drawer").hidden = true;
   $("#drawer-scrim").hidden = true;
+  _syncModalState();
   _restoreFocus();
 }
 $("#drawer-close").addEventListener("click", closeExplainer);
@@ -934,6 +1025,7 @@ async function openDeviceStory(mac) {
 
     $("#device-drawer").hidden = false;
     $("#drawer-scrim").hidden = false;
+    _syncModalState();
     $("#device-drawer-close").focus();
 
     const wireRouter = (sel, path, verb) =>
@@ -995,6 +1087,7 @@ function renderDnsBlock(queries) {
 function closeDeviceDrawer() {
   $("#device-drawer").hidden = true;
   if ($("#alert-drawer").hidden) $("#drawer-scrim").hidden = true;
+  _syncModalState();
   _restoreFocus();
 }
 $("#device-drawer-close").addEventListener("click", closeDeviceDrawer);
@@ -1047,6 +1140,8 @@ function showOnboardingIfNeeded() {
   TOUR_INDEX = 0;
   renderTourStep();
   $("#onboarding").hidden = false;
+  _syncModalState();
+  $("#onboarding-next").focus();
 }
 function renderTourStep() {
   const step = TOUR_STEPS[TOUR_INDEX];
@@ -1059,6 +1154,7 @@ function renderTourStep() {
 }
 async function finishTour() {
   $("#onboarding").hidden = true;
+  _syncModalState();
   await api("/api/settings/save", { first_run_done: "1" });
   refresh();
 }
@@ -1100,17 +1196,19 @@ function paintSettings() {
 $("#keep-alive-save")?.addEventListener("click", async () => {
   const status = $("#keep-alive-status");
   status.textContent = "Applying…";
-  const r = await fetch("/api/settings/save", {
-    method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({ keep_alive: $("#setting-keep-alive").checked ? "1" : "0" }),
-  }).then(r => r.json());
-  if (r.ok) {
-    status.textContent = "Applied ✓";
-  } else {
-    status.textContent = `✗ ${r.error || "failed"}`;
+  // Applying keep-alive reloads the LaunchAgent, which briefly restarts INS —
+  // the response may arrive just before the socket drops, or the socket may
+  // drop first. Treat a dropped connection as "restarting", not an error.
+  try {
+    const r = await fetch("/api/settings/save", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ keep_alive: $("#setting-keep-alive").checked ? "1" : "0" }),
+    }).then(r => r.json());
+    status.textContent = r.ok ? "Applied ✓ — INS is restarting…" : `✗ ${r.error || "failed"}`;
+  } catch {
+    status.textContent = "Applied — INS is restarting…";
   }
-  setTimeout(() => { status.textContent = ""; }, 3000);
-  refresh();
+  setTimeout(() => { status.textContent = ""; }, 4000);
 });
 $("#settings-save")?.addEventListener("click", async () => {
   const status = $("#settings-status");
@@ -1139,6 +1237,8 @@ function paintRouterSettings() {
     const el = document.querySelector(sel);
     if (el && document.activeElement !== el) el.value = val ?? "";
   }
+  const vtls = $("#router-verify-tls");
+  if (vtls && document.activeElement !== vtls) vtls.checked = !!s.router_verify_tls;
   // Show / hide kind-specific rows.
   const k = (s.router_kind || "none");
   document.querySelectorAll("[data-router-unifi]").forEach(el =>
@@ -1157,12 +1257,13 @@ $("#router-save")?.addEventListener("click", async () => {
   const status = $("#router-status");
   status.textContent = "Saving…";
   const body = {
-    router_kind:     $("#router-kind").value,
-    router_host:     $("#router-host").value.trim(),
-    router_user:     $("#router-user").value.trim(),
-    router_site:     $("#router-site").value.trim() || "default",
-    router_ssh_port: $("#router-ssh-port").value.trim() || "22",
-    router_iface:    $("#router-iface").value.trim() || "0",
+    router_kind:       $("#router-kind").value,
+    router_host:       $("#router-host").value.trim(),
+    router_user:       $("#router-user").value.trim(),
+    router_site:       $("#router-site").value.trim() || "default",
+    router_ssh_port:   $("#router-ssh-port").value.trim() || "22",
+    router_iface:      $("#router-iface").value.trim() || "0",
+    router_verify_tls: $("#router-verify-tls").checked ? "1" : "0",
   };
   const pwd = $("#router-pass").value;
   if (pwd) body.router_pass = pwd;
@@ -1325,13 +1426,26 @@ if (rescanBtn) {
   });
 }
 
-// Escape closes the topmost open overlay (onboarding > device drawer > alert
-// drawer), the standard expected affordance for keyboard users.
+// Keyboard handling for overlays: Tab is trapped within the topmost open dialog
+// (with the background inert), and Escape closes it (onboarding > device drawer
+// > alert drawer) — the standard affordances keyboard users expect.
 document.addEventListener("keydown", (e) => {
+  if (e.key === "Tab") { _trapTab(e); return; }
   if (e.key !== "Escape") return;
   if (!$("#onboarding").hidden)      { finishTour(); return; }
   if (!$("#device-drawer").hidden)   { closeDeviceDrawer(); return; }
   if (!$("#alert-drawer").hidden)    { closeExplainer(); return; }
+});
+
+// Redraw the history chart on window resize (its canvas backing store is sized
+// from clientWidth/clientHeight, so a resize without redraw leaves it blurry
+// until the next data load).
+let _historyResizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(_historyResizeTimer);
+  _historyResizeTimer = setTimeout(() => {
+    if (CURRENT_TAB === "history") drawHistory();
+  }, 150);
 });
 
 // ── boot ──────────────────────────────────────────────────────────────────

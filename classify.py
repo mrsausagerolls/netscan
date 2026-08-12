@@ -229,12 +229,14 @@ _FP_KEYWORDS: list[tuple[str, str]] = [
     (r"sonos\b",          "speaker"),
     (r"roku\b",           "tv"),
     (r"fire tv\b|firestick|fire stick", "tv"),
-    (r"nintendo\b|switch", "console"),
+    (r"nintendo\b", "console"),  # bare "switch" removed — matched network switches, "light switch", etc.
     (r"playstation\b|ps5|ps4", "console"),
     (r"xbox\b",           "console"),
     (r"printer\b|laserjet|deskjet|officejet", "printer"),
     (r"camera\b|ipcam|nvr|hikvision|dahua", "camera"),
-    (r"nas\b|synology|qnap|drobo", "nas"),
+    # \bnas\b so "Jonas-PC" isn't a NAS; the prefix allowlist still catches the
+    # common concatenated names (mynas, homenas, filenas, storagenas).
+    (r"\bnas\b|\b(?:my|home|file|storage)nas\b|synology|qnap|drobo", "nas"),
     (r"router\b|gateway|asuswrt", "router"),
     (r"access point\b|unifi|aruba|ubnt", "access_point"),
     (r"watch\b",          "watch"),

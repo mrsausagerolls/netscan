@@ -53,7 +53,7 @@ Out of the box, INS tells you in plain English when:
 - A MAC address suddenly reports a different manufacturer (hardware mismatch,
   often a spoofing attempt).
 - A risky protocol becomes reachable on any device — Telnet, FTP, RDP, VNC,
-  rlogin, NFS, RPC, IRC, open SOCKS proxy.
+  rlogin, rsh, NFS, RPC, IRC, open SOCKS proxy.
 - A camera or DVR is on a brand that ships with default credentials, and its
   admin page is up.
 - A camera's admin page is reachable over HTTP instead of HTTPS.
@@ -175,8 +175,9 @@ appears at the top of the menubar.
   matches what you consented to, and a stray local edit can't strand the update;
   your `.venv` and `data/` are left untouched — then restarts the LaunchAgent.
   Logs to `/tmp/ins-update.log`. Manual: `~/.ins/update.sh`.
-- **Signed .app** (coming with v2.2): click the item to open the release page;
-  download and replace the .app.
+- **Signed .app** (planned — v2.5, see ROADMAP): until then the supported path
+  is `get.sh`; for the unsigned .app the menubar item just opens the release
+  page so you can download and replace it manually.
 
 ## Manual install (alternative)
 

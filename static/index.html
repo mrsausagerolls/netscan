@@ -7,6 +7,9 @@
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+<!-- Screen-reader announcements for newly-raised security alerts. Visually
+     hidden; updated by app.js when the unacknowledged alert count rises. -->
+<div id="a11y-announce" class="sr-only" aria-live="assertive" aria-atomic="true"></div>
 <header>
   <div class="brand">
     <div class="brand-mark" aria-hidden="true">
@@ -71,7 +74,8 @@
     <strong>Network name unavailable</strong> — INS keeps scanning,
     but macOS needs Location Services to read your WiFi SSID.
     Open <em>System Settings → Privacy &amp; Security → Location Services</em>
-    and toggle access on for <em>Python</em> (or your terminal app).
+    and toggle access on for <em>Inglorious Network Scanner</em>
+    (or <em>Python</em> if you're running from source).
   </div>
 </div>
 
@@ -351,6 +355,13 @@
         <label for="router-site">Unifi site:</label>
         <input type="text" id="router-site" placeholder="default">
       </div>
+      <label class="setting-row" data-router-unifi>
+        <input type="checkbox" id="router-verify-tls">
+        <span>
+          Verify the controller's TLS certificate
+          <span class="setting-hint">Leave off for a stock Unifi self-signed certificate. Turn on only if your controller uses a certificate your Mac already trusts — it closes a LAN man-in-the-middle window on your router password.</span>
+        </span>
+      </label>
       <div class="setting-row" data-router-openwrt hidden>
         <label for="router-ssh-port">SSH port:</label>
         <input type="text" id="router-ssh-port" placeholder="22">

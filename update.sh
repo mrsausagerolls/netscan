@@ -64,7 +64,18 @@ cd "$PROJ"
   # commit but the failure is reported and the user can re-run update.sh.
   if git diff --name-only "$before" "$after" | grep -q '^requirements\.txt$'; then
     if [[ -x "$PROJ/.venv/bin/python3" ]]; then
-      "$PROJ/.venv/bin/python3" -m pip install -r requirements.txt
+      # If the dep refresh fails (transient PyPI error, a wheel needing a
+      # compiler, offline), ROLL THE TREE BACK to the pre-update commit before
+      # aborting. Otherwise the tree stays on the new release while the venv
+      # still has the old deps, and the next login execs new app.py against
+      # stale dependencies → ImportError and the menubar app silently fails to
+      # appear. Rolling back guarantees the next launch runs known-good code.
+      if ! "$PROJ/.venv/bin/python3" -m pip install -r requirements.txt; then
+        echo "dependency install failed — rolling back to $before"
+        git reset --hard --quiet "$before"
+        echo "fail: dependency install failed — reverted to $before" > "$STATUS"
+        exit 1
+      fi
     fi
   fi
 

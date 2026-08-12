@@ -41,14 +41,28 @@ PY_OK=$(python3 -c 'import sys; print(1 if sys.version_info >= (3,11) else 0)')
 
 b "→ Installing Inglorious Network Scanner to $DEST"
 if [[ -d "$DEST/.git" ]]; then
-  y "  existing install detected — pulling latest"
-  git -C "$DEST" fetch --quiet origin
-  git -C "$DEST" pull --ff-only --quiet
+  y "  existing install detected — fetching latest"
+  git -C "$DEST" fetch --quiet --tags origin
 else
   if [[ -e "$DEST" ]]; then
     err "$DEST exists and is not a git repo. Move it aside or set INS_DIR."
   fi
   git clone --quiet "$REPO" "$DEST"
+  git -C "$DEST" fetch --quiet --tags origin
+fi
+
+# Pin to the latest published release tag so a fresh install lands on the same
+# vetted code the in-app updater targets — not on unreleased main HEAD (main is
+# ahead of the latest tag in the window between merging and cutting a release).
+# Fall back to main only when the repo has no tags yet.
+LATEST_TAG="$(git -C "$DEST" describe --tags --abbrev=0 2>/dev/null || true)"
+if [[ -n "$LATEST_TAG" ]]; then
+  b "→ Checking out release $LATEST_TAG"
+  git -C "$DEST" checkout --quiet "$LATEST_TAG"
+else
+  y "  no release tags found — using main"
+  git -C "$DEST" checkout --quiet main 2>/dev/null || true
+  git -C "$DEST" pull --ff-only --quiet 2>/dev/null || true
 fi
 
 cd "$DEST"

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import plistlib
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -73,22 +74,33 @@ def set_keep_alive(enabled: bool) -> dict:
     except OSError as e:
         return {"ok": False, "message": f"Couldn't write plist: {e}"}
 
-    # Reload so launchd picks up the new KeepAlive flag. unload + load is
-    # safer than kickstart here because kickstart doesn't re-read the plist.
-    unload = subprocess.run(
-        ["launchctl", "unload", str(PLIST_PATH)],
-        capture_output=True, text=True,
-    )
-    load = subprocess.run(
-        ["launchctl", "load", str(PLIST_PATH)],
-        capture_output=True, text=True,
-    )
-    if load.returncode != 0:
-        return {"ok": False,
-                "message": f"Plist updated but launchctl load failed: "
-                           f"{(load.stderr or load.stdout).strip()}"}
+    # Reload launchd so it re-reads the new KeepAlive flag (a load-time
+    # property; kickstart -k wouldn't re-read the plist). But `launchctl unload`
+    # boots out THIS job — the app runs under it — which SIGTERMs the current
+    # process. Running unload+load synchronously here (as before) meant the app
+    # died mid-call: this return value never reached the browser, and if the
+    # `load` line lost the race with SIGTERM nothing relaunched INS (plist
+    # KeepAlive default is false), so the menubar icon vanished until next login.
+    #
+    # Instead spawn a DETACHED helper that outlives our teardown. It sleeps
+    # briefly so the HTTP response below flushes to the dashboard first, then
+    # unload+load — and because it's in its own session, the `load` runs to
+    # completion even as the app is being SIGTERM'd, bringing INS right back
+    # (RunAtLoad=true). Mirrors update.sh's detached-restart pattern.
+    q = shlex.quote(str(PLIST_PATH))
+    try:
+        subprocess.Popen(
+            ["/bin/sh", "-c",
+             f"sleep 0.7; launchctl unload {q} 2>/dev/null; exec launchctl load {q}"],
+            start_new_session=True, close_fds=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except OSError as e:
+        return {"ok": False, "message": f"Plist updated but reload failed to start: {e}"}
 
     return {"ok": True,
-            "message": ("KeepAlive enabled — INS will auto-restart on quit."
+            "message": ("KeepAlive enabled — INS is restarting now and will "
+                        "auto-relaunch whenever you Quit."
                         if enabled else
-                        "KeepAlive disabled — Quit means quit until next login.")}
+                        "KeepAlive disabled — INS is restarting now; Quit will "
+                        "stay quit until next login.")}

@@ -1,4 +1,4 @@
-__version__   = "2.4.17"
+__version__   = "2.4.18"
 __app_name__  = "Inglorious Network Scanner"
 __short_name__ = "INS"
 __org__       = "Inglorious Labs"

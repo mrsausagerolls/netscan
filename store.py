@@ -190,9 +190,21 @@ class DeviceStore:
         self._db.executescript(_SCHEMA)
         self._apply_table_migrations()
         self._migrate_json_if_present()
+        # Lock down the DB and its WAL/SHM sidecars to owner-only. The sidecars
+        # hold the same recently-written data (device inventory, DNS history,
+        # plaintext router credentials buffered in the WAL until checkpoint), so
+        # hardening only the main file would leave that data at the default
+        # umask. Best-effort: the sidecars may not exist yet on a fresh DB.
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.chmod(f"{self._db_path}{suffix}", 0o600)
+            except OSError:
+                pass
+        # Bound the devices table on startup (MAC randomization would otherwise
+        # let it grow without limit across an install's lifetime). Best-effort.
         try:
-            os.chmod(self._db_path, 0o600)
-        except OSError:
+            self.prune_old_devices()
+        except Exception:
             pass
 
     def _apply_table_migrations(self):
@@ -215,13 +227,20 @@ class DeviceStore:
                 raise
 
     def _cap_table(self, db, table: str):
-        """Prune `table` to its retention cap, oldest rows first. `table` is a
-        source-literal key from _MAX_ROWS, never user input, so interpolating
-        it is injection-safe; the cap itself is bound as a parameter."""
+        """Prune `table` to its retention cap, keeping the newest rows.
+
+        Every capped table is append-only (id is INTEGER PRIMARY KEY
+        AUTOINCREMENT, monotonic with insertion, which matches age order), so we
+        prune by the primary key with a single indexed range delete —
+        `DELETE ... WHERE id <= MAX(id) - cap` — instead of materializing and
+        sorting the whole table by ts on every insert (the old `ORDER BY ts DESC
+        OFFSET ?` form did the latter, and for sightings there is no ts index so
+        it was a full O(N log N) sort on the scan/capture hot path). `table` is a
+        source-literal key from _MAX_ROWS, never user input, so interpolating it
+        is injection-safe; the cap is bound as a parameter."""
         db.execute(
-            f"DELETE FROM {table} WHERE id IN ("
-            f" SELECT id FROM {table} ORDER BY ts DESC LIMIT -1 OFFSET ?"
-            f")",
+            f"DELETE FROM {table} WHERE id <= "
+            f"(SELECT MAX(id) FROM {table}) - ?",
             (_MAX_ROWS[table],),
         )
 
@@ -344,26 +363,36 @@ class DeviceStore:
         mac     = device["mac"]
         now     = time.time()
         latency = device.get("latency")
-        existing = self._qone(
-            "SELECT first_seen, vendor, hostname, last_ip, seen_count FROM devices WHERE mac=?",
-            (mac,),
-        )
-
-        # "New" means we've never SCANNED this MAC before. The passive sniffer
-        # can pre-create a stub row (seen_count=0) from a DHCP broadcast before
-        # the first ARP sweep touches the device, so don't treat the mere
-        # existence of a row as "seen" — a seen_count==0 stub is still new, or
-        # the new-device security alert would be silently suppressed for exactly
-        # the devices most likely to be genuine joiners.
-        is_new          = existing is None or existing["seen_count"] == 0
-        vendor_changed  = None
         new_vendor      = device.get("vendor", "—")
 
-        if existing and new_vendor not in ("—", "") and existing["vendor"] not in ("—", "", None):
-            if new_vendor != existing["vendor"]:
-                vendor_changed = existing["vendor"]
-
         with self._tx() as db:
+            # Read the prior row and write the new state in ONE lock hold. The
+            # scan thread and the sniffer thread share one connection guarded by
+            # self._lock, and _qone/_tx each take that lock independently — so
+            # reading `existing` outside the transaction left a window where the
+            # sniffer's merge_fingerprint could INSERT a seen_count=0 stub for
+            # this MAC (from a DHCP broadcast) after our SELECT returned None.
+            # The else-branch INSERT below would then hit UNIQUE(devices.mac),
+            # roll back, and — since the per-device scan loop has no try/except —
+            # abort the rest of that scan cycle (remaining devices unclassified,
+            # health/alerts skipped). Doing the SELECT inside _tx closes it.
+            existing = db.execute(
+                "SELECT first_seen, vendor, hostname, last_ip, seen_count FROM devices WHERE mac=?",
+                (mac,),
+            ).fetchone()
+
+            # "New" means we've never SCANNED this MAC before. The passive sniffer
+            # can pre-create a stub row (seen_count=0) from a DHCP broadcast before
+            # the first ARP sweep touches the device, so don't treat the mere
+            # existence of a row as "seen" — a seen_count==0 stub is still new, or
+            # the new-device security alert would be silently suppressed for exactly
+            # the devices most likely to be genuine joiners.
+            is_new         = existing is None or existing["seen_count"] == 0
+            vendor_changed = None
+            if existing and new_vendor not in ("—", "") and existing["vendor"] not in ("—", "", None):
+                if new_vendor != existing["vendor"]:
+                    vendor_changed = existing["vendor"]
+
             if existing:
                 db.execute(
                     """UPDATE devices SET
@@ -477,6 +506,27 @@ class DeviceStore:
     def all_seen(self) -> dict:
         rows = self._q("SELECT * FROM devices")
         return {r["mac"]: self._row_to_device(r) for r in rows}
+
+    def prune_old_devices(self, max_age_days: int = 90) -> int:
+        """Delete device rows not seen in `max_age_days`, keeping Known devices
+        forever. Returns the number removed.
+
+        Wi-Fi MAC randomization means every visiting phone/laptop (and every
+        rotated MAC) leaves a permanent row, so the devices table grows without
+        bound over months. all_seen (`SELECT * FROM devices` + per-row JSON
+        decode) is read several times per scan cycle, so its cost scales with
+        total-ever-seen devices rather than currently-present ones. Pruning long
+        untouched, non-Known rows keeps steady-state scanning fast without
+        losing anything the user cares about (Known devices and recent history
+        are retained)."""
+        cutoff = time.time() - max_age_days * 86400
+        with self._lock:
+            cur = self._db.execute(
+                "DELETE FROM devices WHERE last_seen < ? "
+                "AND mac NOT IN (SELECT mac FROM known)",
+                (cutoff,),
+            )
+            return cur.rowcount or 0
 
     def _row_to_device(self, row: sqlite3.Row) -> dict:
         # _row_to_device is also called against rows that don't have every
@@ -641,6 +691,24 @@ class DeviceStore:
             )
             self._cap_table(db, "dns_queries")
 
+    def record_dns_queries(self, rows: list[tuple[str, str, int]]):
+        """Batch-insert (mac, qname, qtype) DNS rows under one transaction.
+
+        Lets the sniffer buffer DNS in memory and flush once a minute (like
+        bandwidth) instead of doing a full write transaction on the packet
+        capture thread for every query — which serialized capture on disk I/O
+        and risked dropped packets on a busy LAN."""
+        if not rows:
+            return
+        now = time.time()
+        with self._tx() as db:
+            db.executemany(
+                "INSERT INTO dns_queries(ts, mac, qname, qtype) VALUES(?,?,?,?)",
+                [(now, (mac or "").upper(), qname, qtype)
+                 for mac, qname, qtype in rows if mac and qname],
+            )
+            self._cap_table(db, "dns_queries")
+
     def dns_queries_for(self, mac: str, limit: int = 100) -> list[dict]:
         rows = self._q(
             "SELECT ts, qname, qtype FROM dns_queries WHERE mac=? "
@@ -681,6 +749,33 @@ class DeviceStore:
     ) -> int:
         """Insert an alert. Returns its id."""
         with self._lock:
+            cur = self._db.execute(
+                "INSERT INTO alerts(ts,mac,kind,severity,title,message) VALUES(?,?,?,?,?,?)",
+                (time.time(), mac, kind, severity, title, message),
+            )
+            return cur.lastrowid
+
+    def add_alert_if_new_today(
+        self, kind: str, severity: str, title: str, message: str, mac: str | None = None
+    ) -> int | None:
+        """Insert an alert unless one with the same (mac, kind) already fired
+        today; return the new id, or None if a same-day duplicate exists.
+
+        The existence check and the INSERT run under ONE lock hold. The old
+        pattern (a separate SELECT in app._alert_already_today, then add_alert)
+        left a gap: the scan thread and an overlapping background port-scan
+        thread could both read "no alert today" and both INSERT, double-firing
+        the SSE push, every webhook POST, the voice announcement, and the Apple
+        Shortcut. Callers publish the ALERT_RAISED event only when this returns
+        a non-None id."""
+        today_start = time.mktime(time.strptime(time.strftime("%Y-%m-%d"), "%Y-%m-%d"))
+        with self._lock:
+            row = self._db.execute(
+                "SELECT 1 FROM alerts WHERE mac IS ? AND kind=? AND ts>=? LIMIT 1",
+                (mac, kind, today_start),
+            ).fetchone()
+            if row:
+                return None
             cur = self._db.execute(
                 "INSERT INTO alerts(ts,mac,kind,severity,title,message) VALUES(?,?,?,?,?,?)",
                 (time.time(), mac, kind, severity, title, message),
@@ -788,6 +883,13 @@ class DeviceStore:
     def get_setting(self, key: str, default: str = "") -> str:
         row = self._qone("SELECT value FROM settings WHERE key=?", (key,))
         return row["value"] if row else default
+
+    def all_settings(self) -> dict[str, str]:
+        """Return every setting in one query. Lets callers that need several
+        keys at once (the dashboard state builder) avoid a lock acquisition +
+        round-trip per key."""
+        return {r["key"]: r["value"]
+                for r in self._q("SELECT key, value FROM settings")}
 
     def set_setting(self, key: str, value: str):
         with self._tx() as db:

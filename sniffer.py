@@ -105,6 +105,33 @@ _counters: dict[str, _Counters] = defaultdict(_Counters)
 _counter_lock = threading.Lock()
 
 
+# ── Buffered DNS queries ─────────────────────────────────────────────────────
+#
+# DNS rows are buffered in memory and batch-written once a minute by _flush_loop
+# (mirroring bandwidth), instead of a full SQLite write transaction per query on
+# the capture thread — that serialized packet capture on disk I/O and risked
+# dropped packets on a busy LAN. Capped so a wedged flush loop can't grow it
+# without bound.
+_DNS_BUFFER_CAP = 20_000
+_dns_buffer: list[tuple[str, str, int]] = []
+_dns_lock = threading.Lock()
+
+
+def _buffer_dns(mac: str, qname: str, qtype: int):
+    if not mac or not qname:
+        return
+    with _dns_lock:
+        if len(_dns_buffer) < _DNS_BUFFER_CAP:
+            _dns_buffer.append((mac, qname, qtype))
+
+
+def _snapshot_dns() -> list[tuple[str, str, int]]:
+    with _dns_lock:
+        rows = _dns_buffer[:]
+        _dns_buffer.clear()
+        return rows
+
+
 def _bump(mac: str, direction: str, n: int):
     if not mac:
         return
@@ -164,7 +191,7 @@ def _handle_packet(pkt, local_mac: str, threat_list, store) -> None:
             if dns.qr == 0 and pkt.haslayer(IP):
                 qname = (pkt[DNSQR].qname or b"").decode("ascii", errors="ignore").rstrip(".")
                 qtype = int(pkt[DNSQR].qtype) if pkt[DNSQR].qtype is not None else 0
-                store.record_dns_query(src_mac, qname, qtype)
+                _buffer_dns(src_mac, qname, qtype)   # batch-flushed off this thread
                 hit = threat_list.matches(qname) if threat_list else None
                 if hit:
                     _publish_threat_alert(src_mac, qname, hit, store)
@@ -237,6 +264,20 @@ _threat_alert_cooldown: dict[tuple[str, str], float] = {}
 _THREAT_ALERT_COOLDOWN = 3600.0   # one alert per (device, flagged domain) per hour
 
 
+def _friendly_label(mac: str, store) -> str:
+    """A human name for `mac`: its Known label, else its last-seen IP, else the
+    MAC. Keeps DNS-threat alerts in plain English instead of leading with a raw
+    hardware address (the one alert that used to)."""
+    try:
+        name = store.known_name(mac)
+        if name:
+            return name
+        dev = store.get_device(mac) or {}
+        return dev.get("ip") or mac
+    except Exception:
+        return mac
+
+
 def _publish_threat_alert(mac: str, qname: str, matched_suffix: str, store) -> None:
     """Fire a warning alert through the standard events bus, de-duplicated.
 
@@ -248,12 +289,14 @@ def _publish_threat_alert(mac: str, qname: str, matched_suffix: str, store) -> N
     if now - _threat_alert_cooldown.get(key, 0.0) < _THREAT_ALERT_COOLDOWN:
         return
     _threat_alert_cooldown[key] = now
+    label = _friendly_label(mac, store)
+    title = f"{label} contacted a flagged domain"
     alert_id = store.add_alert(
         kind="dns_threat_match",
         severity="warning",
-        title=f"Device {mac} contacted {qname}",
+        title=title,
         message=(
-            f"This device looked up {qname}, which matches the local threat "
+            f"{label} looked up {qname}, which matches the local threat "
             f"list entry {matched_suffix!r}. "
             "If this is an IoT device, factory-reset it. "
             "If it's a computer or phone, run a malware scan and review "
@@ -263,8 +306,8 @@ def _publish_threat_alert(mac: str, qname: str, matched_suffix: str, store) -> N
     )
     events.publish(events.ALERT_RAISED, {
         "kind": "dns_threat_match", "severity": "warning",
-        "title": f"Device {mac} contacted {qname}",
-        "message": f"Looked up {qname} (threat list: {matched_suffix}).",
+        "title": title,
+        "message": f"{label} looked up {qname} (threat list: {matched_suffix}).",
         "mac": mac, "id": alert_id, "ts": time.time(),
     })
 
@@ -272,7 +315,8 @@ def _publish_threat_alert(mac: str, qname: str, matched_suffix: str, store) -> N
 # ── Flush loop ──────────────────────────────────────────────────────────────
 
 def _flush_loop(store, interval: int = 60):
-    """Every `interval` seconds, snapshot counters and write to store."""
+    """Every `interval` seconds, snapshot counters + buffered DNS and write to
+    store — off the capture thread so packet capture never blocks on disk I/O."""
     while True:
         time.sleep(interval)
         try:
@@ -281,6 +325,12 @@ def _flush_loop(store, interval: int = 60):
                 store.record_bandwidth_samples(
                     [(mac, c.bytes_in, c.bytes_out) for mac, c in snap.items()],
                 )
+        except Exception:
+            pass
+        try:
+            dns_rows = _snapshot_dns()
+            if dns_rows:
+                store.record_dns_queries(dns_rows)
         except Exception:
             pass
 

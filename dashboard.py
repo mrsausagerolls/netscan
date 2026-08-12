@@ -318,6 +318,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "shortcut_on_alert", "first_run_done",
                 "router_kind", "router_host", "router_user", "router_pass",
                 "router_site", "router_ssh_port", "router_iface",
+                "router_verify_tls",
                 "keep_alive",
             }
             keep_alive_change = None
@@ -340,27 +341,18 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, "application/json",
                        json.dumps(routerctl.get_backend(self.store).test()).encode())
             return
-        if path == "/api/router/block":
+        if path in ("/api/router/block", "/api/router/unblock"):
             import routerctl
-            mac = (body.get("mac") or "").strip()
-            if not mac:
+            raw = (body.get("mac") or "").strip()
+            if not raw:
                 self._send(400, "application/json", b'{"error":"mac required"}')
                 return
-            try:
-                routerctl.get_backend(self.store).block(mac)
-                self._ok()
-            except routerctl.RouterError as e:
-                self._send(502, "application/json",
-                           json.dumps({"error": str(e)}).encode())
-            return
-        if path == "/api/router/unblock":
-            import routerctl
-            mac = (body.get("mac") or "").strip()
-            if not mac:
-                self._send(400, "application/json", b'{"error":"mac required"}')
+            if not routerctl._MAC_RE.match(raw):
+                self._send(400, "application/json", b'{"error":"invalid mac"}')
                 return
+            action = "block" if path.endswith("/block") else "unblock"
             try:
-                routerctl.get_backend(self.store).unblock(mac)
+                getattr(routerctl.get_backend(self.store), action)(raw)
                 self._ok()
             except routerctl.RouterError as e:
                 self._send(502, "application/json",

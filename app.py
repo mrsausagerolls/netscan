@@ -254,6 +254,8 @@ class InsApp(rumps.App):
         self._pending_status: tuple | None = None  # (status_title, scan_time_title)
         self._last_scan_error: float = 0.0
         self._last_traceback_ts: float = 0.0   # rate-limits scan-failure tracebacks
+        self._keep_alive_cache: bool | None = None  # cached LaunchAgent plist read
+        self._keep_alive_ts: float = 0.0
 
         # Static menu items
         self._status    = rumps.MenuItem("Not connected")
@@ -408,30 +410,61 @@ class InsApp(rumps.App):
             "health":     store.latest_health() or self._compute_and_store_health(
                               [d for d in enriched if d.get("present", True)]),
             "wan_mappings": wan_all,
-            "settings": {
-                "voice_enabled":          store.get_setting("voice_enabled", "0") == "1",
-                "shortcut_on_new_device": store.get_setting("shortcut_on_new_device", ""),
-                "shortcut_on_alert":      store.get_setting("shortcut_on_alert", ""),
-                "first_run_done":         store.get_setting("first_run_done", "0") == "1",
-                "router_kind":            store.get_setting("router_kind", "none"),
-                "router_host":            store.get_setting("router_host", ""),
-                "router_user":            store.get_setting("router_user", ""),
-                "router_site":            store.get_setting("router_site", "default"),
-                "router_ssh_port":        store.get_setting("router_ssh_port", "22"),
-                "router_iface":           store.get_setting("router_iface", "0"),
-                "keep_alive":             _read_keep_alive_status(),
-            },
+            "settings": self._settings_for_dashboard(),
             "sniffer":   sniffer.status(),
             "app_name":   __app_name__,
             "version":    __version__,
         }
 
-    def _compute_and_store_health(self, enriched_devices: list[dict]) -> dict:
+    def _settings_for_dashboard(self) -> dict:
+        """Assemble the dashboard settings block from ONE settings query plus a
+        cached keep-alive read. _dash_state runs on every /api/state (per tab,
+        per SSE tick, plus the poll fallback), so the old form — ~10 separate
+        get_setting() round-trips and a plistlib.load of the LaunchAgent plist
+        from disk every time — was pure per-request overhead. router_pass is
+        deliberately never surfaced here."""
+        s = store.all_settings()
+        return {
+            "voice_enabled":          s.get("voice_enabled", "0") == "1",
+            "shortcut_on_new_device": s.get("shortcut_on_new_device", ""),
+            "shortcut_on_alert":      s.get("shortcut_on_alert", ""),
+            "first_run_done":         s.get("first_run_done", "0") == "1",
+            "router_kind":            s.get("router_kind", "none"),
+            "router_host":            s.get("router_host", ""),
+            "router_user":            s.get("router_user", ""),
+            "router_site":            s.get("router_site", "default"),
+            "router_ssh_port":        s.get("router_ssh_port", "22"),
+            "router_iface":           s.get("router_iface", "0"),
+            "router_verify_tls":      s.get("router_verify_tls", "0") == "1",
+            "keep_alive":             self._cached_keep_alive(),
+        }
+
+    def _cached_keep_alive(self) -> bool:
+        """Keep-alive reflects the on-disk LaunchAgent plist, which only changes
+        when the user toggles it. Cache the parsed value for a few seconds so
+        /api/state doesn't stat + plistlib.load the plist on every request."""
+        now = time.time()
+        with self._lock:
+            if self._keep_alive_cache is not None and (now - self._keep_alive_ts) < 10:
+                return self._keep_alive_cache
+        val = _read_keep_alive_status()
+        with self._lock:
+            self._keep_alive_cache = val
+            self._keep_alive_ts    = now
+        return val
+
+    def _compute_and_store_health(self, enriched_devices: list[dict],
+                                  dhcp_servers: list | None = None) -> dict:
+        # Reuse the caller's rogue-DHCP snapshot when provided (the scan loop
+        # computes it once per cycle) instead of recomputing the full-table
+        # aggregate here as well.
+        if dhcp_servers is None:
+            dhcp_servers = detect.rogue_dhcp_servers(store)
         result = health.compute(
             devices       = enriched_devices,
             unack_alerts  = store.alerts(unacknowledged_only=True, limit=200),
             wan_mappings  = store.wan_mappings(),
-            dhcp_servers  = detect.rogue_dhcp_servers(store),
+            dhcp_servers  = dhcp_servers,
         )
         store.record_health(result["score"], result["reasons"])
         result["ts"] = time.time()
@@ -635,16 +668,31 @@ class InsApp(rumps.App):
             # misses a still-connected device.
             store.record_scan(len(display), ssid or "")
 
+            # Compute the network-wide detectors ONCE per scan cycle and reuse
+            # them for both the health score and the network-scope alerts. Each
+            # is a full-table aggregate over the devices/sightings/dhcp tables;
+            # the old code recomputed rogue_dhcp_servers/arp_anomalies/
+            # fingerprint_groups separately in health and in alert evaluation
+            # (and alert evaluation ran twice per cycle), so this collapses
+            # several redundant scans into one.
+            try:
+                dhcp_servers  = detect.rogue_dhcp_servers(store)
+                arp_anomalies = detect.arp_anomalies(store)
+                fp_groups     = detect.fingerprint_groups(store)
+            except Exception:
+                dhcp_servers, arp_anomalies, fp_groups = [], [], []
+
             # Security rules + port scans run on the devices ACTUALLY seen this
             # sweep — carried-over devices carry no new information.
-            self._evaluate_and_dispatch_alerts(devices, new_ports_by_mac={})
+            self._evaluate_device_alerts(devices, new_ports_by_mac={})
+            self._evaluate_network_alerts(dhcp_servers, arp_anomalies, fp_groups)
 
             # Recompute the health score every scan from the devices PRESENT now
             # (not carried-away ones, which would keep dragging the score down
             # after they left). Computing it here also fixes the staleness where
             # _dash_state's `latest_health() or compute` only ever computed once.
             try:
-                self._compute_and_store_health(devices)
+                self._compute_and_store_health(devices, dhcp_servers=dhcp_servers)
             except Exception:
                 pass
 
@@ -740,12 +788,29 @@ class InsApp(rumps.App):
                     fresh["mac"]        = d["mac"]
                     fresh["me"]         = d.get("me", False)
                     updated.append(fresh)
-            self._evaluate_and_dispatch_alerts(updated, new_ports_by_mac)
+            # Only per-device rules here — a newly-opened port doesn't change the
+            # network-scope detectors, which the main scan loop already ran.
+            self._evaluate_device_alerts(updated, new_ports_by_mac)
 
-    def _evaluate_and_dispatch_alerts(
+    def _dispatch_alert(self, alert) -> None:
+        """Persist one Alert with atomic same-day dedup, and publish it to the
+        event bus (notifications / webhooks / SSE / voice / shortcuts) only if it
+        was actually inserted — never a duplicate. The insert+dedup is one lock
+        hold in the store, so two overlapping evaluator threads can't both fire
+        the same alert (which would double-POST every webhook)."""
+        alert_id = store.add_alert_if_new_today(
+            kind=alert.kind, severity=alert.severity,
+            title=alert.title, message=alert.message, mac=alert.mac,
+        )
+        if alert_id is None:
+            return
+        payload = alert.as_dict() | {"id": alert_id, "ts": time.time()}
+        events.publish(events.ALERT_RAISED, payload)
+
+    def _evaluate_device_alerts(
         self, devices: list[dict], new_ports_by_mac: dict[str, list[int]]
     ):
-        """Run per-device + network-wide security rules; persist + dispatch each Alert."""
+        """Run per-device security rules; persist + dispatch each Alert."""
         for d in devices:
             mac = d.get("mac")
             new_ports = new_ports_by_mac.get(mac, [])
@@ -753,42 +818,22 @@ class InsApp(rumps.App):
             for alert in security.evaluate(
                 d, new_ports=new_ports, wan_mappings=wan_for_d
             ):
-                if self._alert_already_today(alert):
-                    continue
-                alert_id = store.add_alert(
-                    kind=alert.kind, severity=alert.severity,
-                    title=alert.title, message=alert.message, mac=alert.mac,
-                )
-                payload = alert.as_dict() | {"id": alert_id, "ts": time.time()}
-                events.publish(events.ALERT_RAISED, payload)
+                self._dispatch_alert(alert)
 
-        # Network-scope rules (no per-device argument).
+    def _evaluate_network_alerts(self, dhcp_servers, arp_anomalies, fingerprint_groups):
+        """Run network-scope security rules against precomputed detector output
+        (the scan loop computes each detector once per cycle and threads it
+        through, instead of re-running the full-table aggregates here)."""
         try:
             net_alerts = security.evaluate_network(
-                dhcp_servers       = detect.rogue_dhcp_servers(store),
-                arp_anomalies      = detect.arp_anomalies(store),
-                fingerprint_groups = detect.fingerprint_groups(store),
+                dhcp_servers       = dhcp_servers,
+                arp_anomalies      = arp_anomalies,
+                fingerprint_groups = fingerprint_groups,
             )
         except Exception:
             net_alerts = []
         for alert in net_alerts:
-            if self._alert_already_today(alert):
-                continue
-            alert_id = store.add_alert(
-                kind=alert.kind, severity=alert.severity,
-                title=alert.title, message=alert.message, mac=alert.mac,
-            )
-            payload = alert.as_dict() | {"id": alert_id, "ts": time.time()}
-            events.publish(events.ALERT_RAISED, payload)
-
-    def _alert_already_today(self, alert) -> bool:
-        """Cheap same-day dedup: query alerts table for matching (mac,kind) since midnight."""
-        today_start = time.mktime(time.strptime(time.strftime("%Y-%m-%d"), "%Y-%m-%d"))
-        rows = store._q(
-            "SELECT 1 FROM alerts WHERE mac IS ? AND kind=? AND ts>=? LIMIT 1",
-            (alert.mac, alert.kind, today_start),
-        )
-        return bool(rows)
+            self._dispatch_alert(alert)
 
     # ── Menu rebuild (main thread only) ──────────────────────────────────────
 
@@ -982,6 +1027,13 @@ class InsApp(rumps.App):
                 self._update_info = info
                 if changed:
                     self._update_dirty = True
+            # Piggyback periodic device-table pruning on this slow loop so a
+            # long-running install (weeks between restarts) doesn't accumulate
+            # unbounded rows from Wi-Fi MAC randomization. Known devices are kept.
+            try:
+                store.prune_old_devices()
+            except Exception:
+                pass
             time.sleep(UPDATE_INTERVAL)
 
     def _flush_update_item(self, _):

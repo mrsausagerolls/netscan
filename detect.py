@@ -52,17 +52,31 @@ class FingerprintGroup:
 # ── Rogue DHCP ───────────────────────────────────────────────────────────────
 
 
-def rogue_dhcp_servers(store) -> list[DhcpServer]:
-    """Return DHCP servers seen on this network in the last 7 days.
+# A rogue DHCP server is only counted when it is BOTH recent and recurring.
+# The old 7-day window pinned a critical alert (and −35 health) for a full week
+# after a single stray OFFER — a phone hotspot, a bridged VM, or a travel router
+# briefly plugged in — long after the device was gone. A genuinely rogue server
+# handing out leases is seen repeatedly and recently; a one-off blip is not.
+_DHCP_RECENT_WINDOW = 24 * 3600   # last sighting must be within a day
+_DHCP_MIN_SIGHTINGS = 2           # ignore a single stray OFFER
 
-    A home network should normally have exactly one DHCP server (the router).
-    Anything else is worth surfacing. The store records observations via
-    `store.record_dhcp_server(ip, mac)` from the scanner.
+
+def rogue_dhcp_servers(store, recent_window: int = _DHCP_RECENT_WINDOW,
+                       min_sightings: int = _DHCP_MIN_SIGHTINGS) -> list[DhcpServer]:
+    """Return DHCP servers actively answering on this network.
+
+    A home network should have exactly one DHCP server (the router); a second
+    persistent one is worth a critical alert. We count a (ip, mac) only when it
+    was seen within `recent_window` AND at least `min_sightings` times, so a
+    transient second server doesn't linger as a false positive. The store
+    records observations via `store.record_dhcp_server(ip, mac)` from the sniffer.
     """
+    now = time.time()
     rows = store._q(
         "SELECT ip, mac, MIN(ts) AS first, MAX(ts) AS last "
-        "FROM dhcp_servers WHERE ts >= ? GROUP BY ip, mac ORDER BY last DESC",
-        (time.time() - 7 * 86400,),
+        "FROM dhcp_servers WHERE ts >= ? GROUP BY ip, mac "
+        "HAVING COUNT(*) >= ? AND MAX(ts) >= ? ORDER BY MAX(ts) DESC",
+        (now - 7 * 86400, min_sightings, now - recent_window),
     )
     return [
         DhcpServer(
@@ -123,6 +137,15 @@ def _normalize_fingerprint(hints: dict) -> str:
     We pick the high-signal fields (mDNS hostname, UPnP friendlyName,
     NetBIOS name) and ignore noisy ones (HTTP Server header changes with
     every firmware push).
+
+    NOTE: grouping keys on the EXACT concatenation of whichever of these fields
+    are present, so only fields captured together on the same active scan are
+    safe to include. The DHCP option-12 hostname is deliberately excluded: it's
+    captured passively at a different time than mDNS/SSDP/SMB, so folding it in
+    would make two rotated-MAC siblings normalize differently (one with the
+    hostname, one without) and land in different buckets — fragmenting exactly
+    the groups this is meant to collapse. Enabling it would require grouping on
+    any-shared-signal rather than exact-string equality.
     """
     parts = []
     for key in ("mdns", "ssdp", "smb"):

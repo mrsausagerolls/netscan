@@ -449,11 +449,24 @@ def test_health_bands_cover_full_range():
 def test_detect_rogue_dhcp_returns_one_per_pair(tmp_path):
     import store, detect
     s = store.DeviceStore(data_dir=tmp_path)
+    # Each server needs >= 2 recent sightings to count (a single stray OFFER is
+    # ignored so a transient hotspot/VM doesn't pin a week-long critical alert).
     s.record_dhcp_server("192.168.1.1", "AA:BB:CC:DD:EE:FF")
-    s.record_dhcp_server("192.168.1.1", "AA:BB:CC:DD:EE:FF")   # same → dedup
+    s.record_dhcp_server("192.168.1.1", "AA:BB:CC:DD:EE:FF")   # same → one pair
+    s.record_dhcp_server("192.168.1.50", "11:22:33:44:55:66")
     s.record_dhcp_server("192.168.1.50", "11:22:33:44:55:66")
     servers = detect.rogue_dhcp_servers(s)
     assert len(servers) == 2
+
+
+def test_detect_rogue_dhcp_ignores_single_stray_offer(tmp_path):
+    import store, detect
+    s = store.DeviceStore(data_dir=tmp_path)
+    s.record_dhcp_server("192.168.1.1",  "AA:BB:CC:DD:EE:FF")  # router, seen twice
+    s.record_dhcp_server("192.168.1.1",  "AA:BB:CC:DD:EE:FF")
+    s.record_dhcp_server("192.168.1.99", "DE:AD:BE:EF:00:01")  # one-off blip
+    servers = detect.rogue_dhcp_servers(s)
+    assert [srv.ip for srv in servers] == ["192.168.1.1"]
 
 
 def test_detect_arp_anomalies_flags_ip_with_multiple_macs(tmp_path):
@@ -1567,3 +1580,333 @@ def test_get_backend_tolerates_bad_router_ints(tmp_path):
         s.set_setting(k, v)
     b = routerctl.get_backend(s)            # must not raise ValueError
     assert b.ssh_port == 22 and b.iface_idx == 0
+
+
+# ── regression: risky-port detection is actually wired to the scanner ────────
+
+def test_probe_ports_superset_of_risky_ports():
+    """The scanner must probe every port the security rules care about, or the
+    'risky protocol reachable' alert and its health penalties can never fire."""
+    import scanner, security
+    missing = set(security._RISKY_PORTS) - set(scanner.PROBE_PORTS)
+    assert not missing, f"risky ports never scanned: {sorted(missing)}"
+
+
+# ── classifier keyword fixes ─────────────────────────────────────────────────
+
+def test_classify_switch_hostname_is_not_a_console():
+    import classify
+    # A network switch / "light switch" hostname must not classify as a console.
+    dtype, _ = classify.classify(hostname="core-switch")
+    assert dtype != "console"
+    # A real Nintendo Switch still classifies via the "nintendo" token.
+    dtype, _ = classify.classify(fingerprint="Nintendo Switch")
+    assert dtype == "console"
+
+
+def test_classify_name_ending_in_nas_is_not_a_nas():
+    import classify
+    assert classify.classify(hostname="Jonas-PC")[0] != "nas"
+    assert classify.classify(hostname="office-nas")[0] == "nas"
+    assert classify.classify(hostname="mynas")[0] == "nas"      # concatenated prefix still matches
+
+
+# ── classifier: DHCP option-55 fingerprinting ────────────────────────────────
+
+def test_classify_dhcp55_exact_ios():
+    import classify
+    hints = {"dhcp_55": "1,121,3,6,15,119,252"}
+    dtype, conf = classify.classify(hints=hints)
+    assert dtype == "phone" and conf >= 0.85
+    assert classify.dhcp_vendor(hints) == "Apple"
+    assert classify.dhcp_label(hints) == "iPhone / iPad"
+
+
+def test_classify_dhcp55_feature_fallback_windows():
+    import classify
+    # A PRL that isn't an exact signature but carries the Windows feature set.
+    hints = {"dhcp_55": "1,2,3,6,15,44,46,47,121,249,252,99"}
+    dtype, conf = classify.classify(hints=hints)
+    assert dtype == "computer" and 0.6 <= conf < 0.85
+
+
+def test_classify_fingerprint_beats_dhcp55():
+    import classify
+    # An explicit fingerprint keyword wins over a conflicting DHCP signature.
+    dtype, _ = classify.classify(fingerprint="Apple TV",
+                                 hints={"dhcp_55": "1,3,6,15,26,28,51,58,59,43"})
+    assert dtype == "tv"
+
+
+def test_classify_dhcp55_unknown_returns_none():
+    import classify
+    assert classify._match_dhcp({"dhcp_55": "255,254,253"}) is None
+
+
+# ── security: full risky-port severity table is honored ──────────────────────
+
+def test_security_risky_ports_match_table_severity():
+    import security
+    for port, (sev, _proto, _why) in security._RISKY_PORTS.items():
+        alerts = security.check_risky_ports({"mac": "AA:BB:CC:DD:EE:FF",
+                                             "ip": "10.0.0.9"}, [port])
+        assert len(alerts) == 1
+        assert alerts[0].severity == sev, f"port {port} severity drifted"
+
+
+def test_security_camera_http_only_is_info_severity():
+    import security
+    a = security.check_admin_panel_for_camera(
+        {"device_type": "camera", "ports": [80], "mac": "AA:BB:CC:DD:EE:FF",
+         "ip": "10.0.0.9"})
+    assert a is not None and a.kind == "camera_no_https" and a.severity == "info"
+
+
+# ── health: spoofing penalties are reachable + port penalties derived ────────
+
+def test_health_penalizes_vendor_change_alert():
+    import health
+    base = health.compute(devices=[], unack_alerts=[], wan_mappings=[], dhcp_servers=[])
+    with_spoof = health.compute(
+        devices=[], wan_mappings=[], dhcp_servers=[],
+        unack_alerts=[{"kind": "vendor_changed", "severity": "critical"}])
+    # The dedicated vendor_changed penalty (25) must exceed the generic
+    # unack_critical hit (8) that the alert would otherwise contribute.
+    assert base["score"] - with_spoof["score"] >= 25
+
+
+def test_health_penalizes_arp_flap_alert():
+    import health
+    r = health.compute(
+        devices=[], wan_mappings=[], dhcp_servers=[],
+        unack_alerts=[{"kind": "arp_flap_10.0.0.5", "severity": "critical"}])
+    assert r["score"] <= 100 - 25
+
+
+def test_health_port_penalties_follow_risky_port_severity():
+    import health
+    telnet = health.compute(
+        devices=[{"ip": "10.0.0.9", "ports": [23], "is_known": False}],
+        unack_alerts=[], wan_mappings=[], dhcp_servers=[])
+    rdp = health.compute(
+        devices=[{"ip": "10.0.0.9", "ports": [3389], "is_known": False}],
+        unack_alerts=[], wan_mappings=[], dhcp_servers=[])
+    # Telnet is critical, RDP is warning — telnet must cost at least as much.
+    telnet_hit = sum(x["weight"] for x in telnet["reasons"] if "risky_port" in x.get("key", ""))
+    rdp_hit    = sum(x["weight"] for x in rdp["reasons"] if "risky_port" in x.get("key", ""))
+    assert telnet_hit >= rdp_hit > 0
+
+
+def test_health_every_penalty_key_is_reachable():
+    """Guard against a re-introduced dead _PENALTIES entry: every non-zero key
+    must be produced by some compute() input."""
+    import health
+    reachable = set()
+    # Drive each condition and collect the keys compute() emits.
+    scenarios = [
+        dict(devices=[], wan_mappings=[], dhcp_servers=[object(), object()],
+             unack_alerts=[]),
+        dict(devices=[{"ip": "1", "device_type": "camera", "ports": [80]}],
+             wan_mappings=[{"internal_ip": "1", "external_port": 8080}],
+             dhcp_servers=[], unack_alerts=[]),
+        dict(devices=[{"ip": "1", "ports": [23]}], wan_mappings=[], dhcp_servers=[],
+             unack_alerts=[{"kind": "vendor_changed", "severity": "critical"},
+                           {"kind": "arp_flap_x", "severity": "critical"},
+                           {"kind": "other", "severity": "critical"},
+                           {"kind": "w", "severity": "warning"}]),
+        dict(devices=[{"ip": "1", "vendor": "Hikvision", "ports": [80]},
+                      {"ip": "2", "is_known": False}],
+             wan_mappings=[], dhcp_servers=[], unack_alerts=[]),
+        dict(devices=[{"ip": "1", "device_type": "camera", "ports": [80]}],
+             wan_mappings=[], dhcp_servers=[], unack_alerts=[]),
+        # A warning-severity risky port + a non-camera WAN exposure.
+        dict(devices=[{"ip": "9", "ports": [3389]}],
+             wan_mappings=[{"internal_ip": "9", "external_port": 3389}],
+             dhcp_servers=[], unack_alerts=[]),
+    ]
+    for sc in scenarios:
+        for r in health.compute(**sc)["reasons"]:
+            reachable.add(r.get("key"))
+    nonzero = {k for k, (per, _cap) in health._PENALTIES.items() if per > 0}
+    assert nonzero <= reachable, f"unreachable penalty keys: {nonzero - reachable}"
+
+
+# ── routerctl: MAC validation + OpenWrt add_list-per-MAC ─────────────────────
+
+def test_routerctl_validate_mac():
+    import routerctl, pytest
+    assert routerctl.validate_mac("AA:BB:CC:DD:EE:FF") == "aa:bb:cc:dd:ee:ff"
+    for bad in ("", "not-a-mac", "AA:BB:CC:DD:EE", "aa:bb:cc:dd:ee:ff; reboot"):
+        with pytest.raises(routerctl.RouterError):
+            routerctl.validate_mac(bad)
+
+
+def test_routerctl_openwrt_block_emits_one_add_list_per_mac():
+    import routerctl
+    b = routerctl.OpenWrtBackend("10.0.0.1", "root", None)
+    scripts = []
+    b._ssh = lambda cmd: scripts.append(cmd) or ""
+    b._read_maclist = lambda: ["11:22:33:44:55:66"]     # one already blocked
+    b.block("AA:BB:CC:DD:EE:FF")                          # add a second
+    script = scripts[-1]
+    assert script.count("add_list") == 2                 # one per MAC, not one joined
+    # No single add_list token may contain two MACs.
+    import re
+    for m in re.findall(r"add_list \S+\.maclist=(\S+)", script):
+        assert m.count(":") == 5
+
+
+def test_routerctl_openwrt_block_rejects_bad_mac():
+    import routerctl, pytest
+    b = routerctl.OpenWrtBackend("10.0.0.1", "root", None)
+    b._ssh = lambda cmd: ""
+    with pytest.raises(routerctl.RouterError):
+        b.block("evil'; reboot; '")
+
+
+# ── igd: SSRF guard on LOCATION / control URLs ───────────────────────────────
+
+def test_igd_is_lan_url_accepts_private_http():
+    import igd
+    assert igd._is_lan_url("http://192.168.1.1:5000/desc.xml")
+    assert igd._is_lan_url("http://10.0.0.1/ctrl")
+
+
+def test_igd_is_lan_url_rejects_public_and_nonhttp():
+    import igd
+    assert not igd._is_lan_url("http://8.8.8.8/desc.xml")            # public IP
+    assert not igd._is_lan_url("http://evil.example/desc.xml")      # name, not IP
+    assert not igd._is_lan_url("file:///etc/passwd")               # non-http scheme
+    assert not igd._is_lan_url("ftp://192.168.1.1/")               # non-http scheme
+    assert not igd._is_lan_url("http://169.254.169.254/latest/")   # link-local metadata
+
+
+# ── store: atomic same-day alert dedup + device pruning ──────────────────────
+
+def test_store_add_alert_if_new_today_dedups(tmp_path):
+    s = _fresh_store(tmp_path)
+    first = s.add_alert_if_new_today("new_device", "info", "t", "m", mac="AA:BB")
+    dup   = s.add_alert_if_new_today("new_device", "info", "t", "m", mac="AA:BB")
+    other = s.add_alert_if_new_today("new_device", "info", "t", "m", mac="CC:DD")
+    assert first is not None and dup is None and other is not None
+    assert len(s.alerts()) == 2
+
+
+def test_store_prune_old_devices_keeps_known(tmp_path):
+    import time
+    s = _fresh_store(tmp_path)
+    s.touch({"mac": "AA:BB:CC:DD:EE:FF", "ip": "10.0.0.5", "hostname": "h", "vendor": "v"})
+    s.touch({"mac": "11:22:33:44:55:66", "ip": "10.0.0.6", "hostname": "h", "vendor": "v"})
+    s.add_known("11:22:33:44:55:66", "My Laptop")
+    # Age both rows well past the retention window.
+    old = time.time() - 200 * 86400
+    s._db.execute("UPDATE devices SET last_seen=?", (old,))
+    removed = s.prune_old_devices(max_age_days=90)
+    assert removed == 1
+    macs = set(s.all_seen)
+    assert "11:22:33:44:55:66" in macs        # Known device kept
+    assert "AA:BB:CC:DD:EE:FF" not in macs     # stale non-Known pruned
+
+
+def test_store_cap_table_keeps_newest(tmp_path):
+    import store
+    s = _fresh_store(tmp_path)
+    s._db.execute("BEGIN")
+    for i in range(10):
+        s._db.execute("INSERT INTO scans(ts,count,ssid) VALUES(?,?,?)", (i, i, "x"))
+    s._db.execute("COMMIT")
+    with patch.dict(store._MAX_ROWS, {"scans": 3}):
+        with s._tx() as db:
+            s._cap_table(db, "scans")
+    counts = sorted(r["count"] for r in s._q("SELECT count FROM scans"))
+    assert counts == [7, 8, 9]      # newest 3 kept
+
+
+# ── threats: hot-path reload throttle ────────────────────────────────────────
+
+def test_threats_matches_is_throttled(tmp_path, monkeypatch):
+    import threats
+    p = tmp_path / "threats.txt"
+    p.write_text("bad.example\n")
+    tl = threats.ThreatList(p)
+    calls = {"n": 0}
+    real_load = tl._load_locked
+    monkeypatch.setattr(tl, "_load_locked", lambda: (calls.__setitem__("n", calls["n"] + 1), real_load())[1])
+    for _ in range(50):
+        tl.matches("foo.example")
+    assert calls["n"] <= 1          # stat()/reload throttled, not once per call
+
+
+# ── store.run_hook shell-injection sanitizer ─────────────────────────────────
+
+def test_store_run_hook_strips_shell_metacharacters(tmp_path, monkeypatch):
+    import store
+    s = _fresh_store(tmp_path)
+    s.set_hook_script("true")
+    captured = {}
+
+    class FakePopen:
+        def __init__(self, *a, **k):
+            captured["env"] = k.get("env", {})
+
+    monkeypatch.setattr(store.subprocess, "Popen", FakePopen)
+    s.run_hook({
+        "ip": "10.0.0.5", "mac": "AA:BB:CC:DD:EE:FF",
+        "vendor": "ACME; rm -rf ~", "hostname": "$(reboot)`id`",
+        "device_type": "camera",
+    }, ssid="net|evil & echo")
+    env = captured["env"]
+    for key in ("DEVICE_VENDOR", "DEVICE_HOSTNAME", "SSID"):
+        v = env[key]
+        assert not any(c in v for c in "$`;|&()'\"\\<>"), f"{key} leaked metachar: {v!r}"
+        assert len(v) <= 128
+
+
+# ── dashboard: webhook URL scheme validation ─────────────────────────────────
+
+def test_webhook_add_rejects_non_http_scheme():
+    import dashboard, io
+    import json as _json
+    calls = []
+
+    class FakeStore:
+        def add_webhook(self, **k):
+            calls.append(k)
+
+    dashboard._Handler.allowed_hosts   = {"127.0.0.1:8765"}
+    dashboard._Handler.allowed_origins = {"http://127.0.0.1:8765"}
+    h = dashboard._Handler.__new__(dashboard._Handler)
+    h.store = FakeStore()
+    h.on_known_change = None
+    responses = []
+    h._send = lambda code, ctype, b: responses.append((code, b))
+    h._ok   = lambda: responses.append((200, b'{"ok":true}'))
+
+    def run(body):
+        raw = _json.dumps(body).encode()
+        h.headers = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765",
+                     "Content-Length": str(len(raw))}
+        h.rfile = io.BytesIO(raw)
+        h.path = "/api/webhooks/add"
+        responses.clear()
+        h.do_POST()
+
+    run({"url": "file:///etc/passwd"})
+    assert responses[-1][0] == 400          # rejected
+    assert not calls                        # store never touched
+
+    run({"url": "https://example.com/hook", "label": "x", "min_severity": "info"})
+    assert calls and calls[-1]["url"] == "https://example.com/hook"
+
+
+def test_igd_redirect_handler_blocks_off_lan_hop():
+    """The IGD opener must re-validate redirect targets, not just the first URL —
+    otherwise a LAN responder can 302 INS to a metadata/off-LAN host (SSRF)."""
+    import igd, pytest
+    h = igd._LANRedirectHandler()
+    # A redirect to a public / metadata host is refused.
+    with pytest.raises(igd.urllib.error.HTTPError):
+        h.redirect_request(None, None, 302, "Found", {},
+                           "http://169.254.169.254/latest/")
+    with pytest.raises(igd.urllib.error.HTTPError):
+        h.redirect_request(None, None, 302, "Found", {}, "http://8.8.8.8/x")

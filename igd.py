@@ -19,8 +19,10 @@ All network calls have hard timeouts; the module is safe to call from the
 scanner thread but it does block, so call it on a worker.
 """
 
+import ipaddress
 import re
 import socket
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -29,6 +31,52 @@ from xml.etree import ElementTree
 _NS = {
     "s": "http://schemas.xmlsoap.org/soap/envelope/",
 }
+
+
+def _is_lan_url(url: str) -> bool:
+    """True only for an http(s) URL whose host is a private or loopback IPv4
+    literal (RFC1918 / 127.0.0.0/8).
+
+    IGD control endpoints live on the LAN gateway, always on a private range.
+    Any device on the LAN can win the SSDP multicast race and return an
+    arbitrary LOCATION header, which we'd otherwise fetch (and derive the SOAP
+    control URL from) with no restriction — a blind SSRF, and worse for a
+    security tool, a way to spoof the WAN-exposure report from attacker-
+    controlled data. Requiring an IP literal (not a resolvable name) blocks
+    DNS-based redirection; excluding link-local closes the 169.254.169.254
+    cloud-metadata vector."""
+    try:
+        p = urllib.parse.urlparse(url)
+    except ValueError:
+        return False
+    if p.scheme not in ("http", "https"):
+        return False
+    try:
+        ip = ipaddress.ip_address(p.hostname or "")
+    except ValueError:
+        return False
+    return ip.version == 4 and (ip.is_private and not ip.is_link_local or ip.is_loopback)
+
+
+class _LANRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-validate every redirect hop against _is_lan_url.
+
+    urllib follows 3xx redirects automatically and validating only the initial
+    URL would let a malicious SSDP responder return a valid-looking LAN LOCATION
+    that then 302-redirects INS to an off-LAN or link-local (169.254.169.254
+    metadata) host — reopening the very SSRF vector _is_lan_url is meant to
+    close. Rejecting an off-LAN redirect target here plugs that."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _is_lan_url(newurl):
+            raise urllib.error.HTTPError(
+                newurl, code, "refusing redirect to a non-LAN host", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+# Dedicated opener so IGD fetches never follow a redirect off the LAN. Used for
+# all three network calls below instead of the module-level urllib.request.urlopen.
+_LAN_OPENER = urllib.request.build_opener(_LANRedirectHandler())
 
 _IGD_SEARCH_TARGETS = [
     "urn:schemas-upnp-org:device:InternetGatewayDevice:1",
@@ -97,8 +145,10 @@ def _msearch(st: str, timeout: float) -> str | None:
 
 def _parse_device_xml(location: str) -> dict | None:
     """Walk the device description; return {control_url, service_type, urlbase}."""
+    if not _is_lan_url(location):
+        return None   # reject a spoofed / off-LAN SSDP LOCATION (SSRF guard)
     try:
-        with urllib.request.urlopen(location, timeout=2) as resp:
+        with _LAN_OPENER.open(location, timeout=2) as resp:
             body = resp.read(64 * 1024)
     except Exception:
         return None
@@ -138,6 +188,8 @@ def _parse_device_xml(location: str) -> dict | None:
                 continue
             if not ctrl.startswith("http"):
                 ctrl = urllib.parse.urljoin(urlbase + "/", ctrl)
+            if not _is_lan_url(ctrl):
+                continue   # a controlURL pointing off-LAN is a spoof — skip it
             return {"control_url": ctrl, "service_type": st, "urlbase": urlbase}
     return None
 
@@ -152,6 +204,8 @@ def get_external_ip(igd: dict) -> str | None:
     expose it, the call fails, or we got an empty / 0.0.0.0 reply. Keeps the
     no-telemetry posture — no third-party echo service is involved.
     """
+    if not _is_lan_url(igd.get("control_url", "")):
+        return None
     body = (
         '<?xml version="1.0"?>\n'
         '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
@@ -169,7 +223,7 @@ def get_external_ip(igd: dict) -> str | None:
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=3) as resp:
+        with _LAN_OPENER.open(req, timeout=3) as resp:
             xml = resp.read(4096)
     except Exception:
         return None
@@ -202,6 +256,8 @@ def list_port_mappings(igd: dict, max_entries: int = 64) -> list[Mapping]:
 
 
 def _get_mapping(igd: dict, index: int) -> Mapping | None:
+    if not _is_lan_url(igd.get("control_url", "")):
+        return None
     body = (
         '<?xml version="1.0"?>\n'
         '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
@@ -222,7 +278,7 @@ def _get_mapping(igd: dict, index: int) -> Mapping | None:
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=3) as resp:
+        with _LAN_OPENER.open(req, timeout=3) as resp:
             xml = resp.read(8192)
     except Exception:
         return None

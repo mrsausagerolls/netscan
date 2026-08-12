@@ -5,8 +5,9 @@
 #
 # What this installs:
 #   /Library/LaunchDaemons/co.ingloriouslabs.netscan.bpfgrant.plist
-#     — runs at every boot, chmods /dev/bpf* to mode 644 and chowns them to
-#       a dedicated `access_bpf` group, then adds your user to that group.
+#     — runs at every boot: chgrps /dev/bpf* to a dedicated `access_bpf` group
+#       and chmods them g+rw (mode 660, root:access_bpf — NOT world-readable),
+#       then adds your user to that group.
 #
 # What this does NOT do:
 #   — give INS or any other tool the ability to inject packets.

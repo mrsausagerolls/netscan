@@ -10,17 +10,42 @@ import time
 from concurrent.futures import ThreadPoolExecutor, wait
 from ipaddress import IPv4Network
 
+# Ports we connect-scan on every device. Two groups:
+#
+#   1. Identification/service ports — feed the classifier and the device story.
+#   2. Risky protocols — MUST stay a superset of security._RISKY_PORTS. The
+#      "a risky protocol became reachable" alert (security.check_risky_ports)
+#      and the telnet/rdp/vnc/ftp health penalties only ever fire for ports we
+#      actually scan; if a risky port isn't probed here it is invisible to
+#      those rules. A regression test pins PROBE_PORTS ⊇ security._RISKY_PORTS.
+#
+# All ports are probed concurrently (one worker per port), so wall-clock time
+# is bounded by the single-socket timeout regardless of how many we list.
 PROBE_PORTS = {
+    # ── Identification / service ports ──
     22:   "SSH",
     80:   "HTTP",
     443:  "HTTPS",
     554:  "RTSP",
     8080: "HTTP-alt",
-    8883: "MQTT",
+    8883: "MQTT-TLS",
+    1883: "MQTT",
     9100: "Print",
     5000: "UPnP",
     137:  "NetBIOS",
+    139:  "NetBIOS-SSN",
     445:  "SMB",
+    # ── Risky protocols (keep in sync with security._RISKY_PORTS) ──
+    23:   "Telnet",
+    21:   "FTP",
+    111:  "RPC portmapper",
+    513:  "rlogin",
+    514:  "rsh",
+    1080: "SOCKS proxy",
+    2049: "NFS",
+    3389: "RDP",
+    5900: "VNC",
+    6667: "IRC",
 }
 
 # ── Dependency check ─────────────────────────────────────────────────────────

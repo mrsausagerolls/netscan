@@ -22,24 +22,33 @@ Output:
     reasons: list[{weight: int, label: str}]
 """
 
+import security
+
 # Penalty table — one entry per condition, biggest first.
 # Each tuple: (max penalty per occurrence, soft cap across all occurrences).
 _PENALTIES = {
-    "rogue_dhcp":        (35, 35),
-    "arp_flap":          (25, 25),
-    "vendor_changed":    (25, 25),
-    "wan_exposed_camera":(25, 25),
-    "wan_exposed_other": (10, 20),
-    "default_creds":     (15, 30),
-    "telnet_open":       (15, 15),
-    "rdp_open":          (10, 20),
-    "vnc_open":          (10, 20),
-    "ftp_open":          (8,  16),
-    "unknown_device":    (4,  20),
-    "camera_no_https":   (4,  8),
-    "unack_critical":    (8,  16),
-    "unack_warning":     (3,  9),
-    "no_alerts_baseline":(0,  0),   # informational
+    "rogue_dhcp":         (35, 35),
+    "arp_flap":           (25, 25),
+    "vendor_changed":     (25, 25),
+    "wan_exposed_camera": (25, 25),
+    "wan_exposed_other":  (10, 20),
+    "default_creds":      (15, 30),
+    # Risky open ports, bucketed by security._RISKY_PORTS severity so the score
+    # stays in lockstep with the alert severities (single source of truth).
+    "risky_port_critical":(15, 30),   # Telnet, rlogin, rsh
+    "risky_port_warning": (8,  24),   # FTP, RPC, NFS, RDP, VNC, IRC, SOCKS
+    "unknown_device":     (4,  20),
+    "camera_no_https":    (4,  8),
+    "unack_critical":     (8,  16),
+    "unack_warning":      (3,  9),
+    "no_alerts_baseline": (0,  0),   # informational
+}
+
+# Map each risky port to (health-penalty-key, human label) from the canonical
+# security._RISKY_PORTS table so this file never drifts from the alert rules.
+_PORT_PENALTY = {
+    port: ("risky_port_critical" if sev == "critical" else "risky_port_warning", proto)
+    for port, (sev, proto, _why) in security._RISKY_PORTS.items()
 }
 
 _BAND_THRESHOLDS = [
@@ -49,14 +58,6 @@ _BAND_THRESHOLDS = [
     (35, "poor",      "Action needed — something on your network is wrong."),
     (0,  "at_risk",   "At risk — please address the items below now."),
 ]
-
-
-def _kind_of_port(port: int) -> str | None:
-    if port == 23:                              return "telnet_open"
-    if port == 3389:                            return "rdp_open"
-    if port == 5900:                            return "vnc_open"
-    if port == 21:                              return "ftp_open"
-    return None
 
 
 def compute(devices: list[dict], unack_alerts: list[dict],
@@ -104,12 +105,13 @@ def compute(devices: list[dict], unack_alerts: list[dict],
             unknown += 1
 
         ports = set(d.get("ports") or [])
+        who = d.get("hostname") or d.get("vendor") or d.get("ip", "?")
         for p in ports:
-            kind = _kind_of_port(p)
-            if not kind:
+            entry = _PORT_PENALTY.get(p)
+            if not entry:
                 continue
-            penalize(kind,
-                     f"Port {p} open on {d.get('hostname') or d.get('vendor') or d.get('ip', '?')}")
+            key, proto = entry
+            penalize(key, f"{proto} (port {p}) open on {who}")
 
         # Camera with admin on HTTP only.
         if d.get("device_type") == "camera" and 80 in ports and 443 not in ports:
@@ -139,8 +141,32 @@ def compute(devices: list[dict], unack_alerts: list[dict],
                 "key": "unknown_device",
             })
 
-    # Unacknowledged alert pressure.
-    crit = sum(1 for a in unack_alerts if a.get("severity") == "critical")
+    # Dedicated heavy penalties for the most serious spoofing/MITM alert kinds.
+    # These carry their own 25-point weight instead of being flattened into the
+    # generic unack_critical bucket (capped at 16 across ALL criticals), which
+    # otherwise let an active ARP-spoof or vendor-spoof network read "excellent".
+    def _has_kind(prefix_or_exact, *, prefix=False):
+        for a in unack_alerts:
+            k = a.get("kind") or ""
+            if (k.startswith(prefix_or_exact) if prefix else k == prefix_or_exact):
+                return True
+        return False
+
+    if _has_kind("vendor_changed"):
+        penalize("vendor_changed",
+                 "A device's hardware vendor changed — possible MAC spoofing")
+    if _has_kind("arp_flap", prefix=True):
+        penalize("arp_flap",
+                 "An IP is claimed by multiple devices — possible ARP spoofing")
+
+    # Generic unacknowledged pressure, EXCLUDING the kinds handled above so a
+    # single spoofing alert isn't counted twice.
+    def _counts_generic(a) -> bool:
+        k = a.get("kind") or ""
+        return k != "vendor_changed" and not k.startswith("arp_flap")
+
+    crit = sum(1 for a in unack_alerts
+               if a.get("severity") == "critical" and _counts_generic(a))
     warn = sum(1 for a in unack_alerts if a.get("severity") == "warning")
     if crit:
         penalize("unack_critical",
