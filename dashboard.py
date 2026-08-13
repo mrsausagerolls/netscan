@@ -207,7 +207,17 @@ class _Handler(BaseHTTPRequestHandler):
         path = parsed.path
 
         if path == "/api/state":
-            self._send(200, "application/json", json.dumps(self.get_state()).encode())
+            state = self.get_state()
+            if not self._is_loopback():
+                # Redact for LAN token holders: webhook URLs are capability
+                # secrets (posting rights to the user's Discord/Slack), the join
+                # hook is a shell script, and settings carry router host/user.
+                # The read-only iOS companion consumes none of them, and the
+                # security contract says a token can never read the webhook
+                # list — /api/state must not be a side door to the same data.
+                state = {k: v for k, v in state.items()
+                         if k not in ("webhooks", "hook", "settings")}
+            self._send(200, "application/json", json.dumps(state).encode())
             return
         if path == "/api/history":
             # Optional ?limit=N returns only the most recent N scans so the
@@ -546,6 +556,11 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        # Everything must revalidate: after an in-app update, a cached app.js
+        # paired with a fresh index.html (or vice versa) breaks every button on
+        # the page. The dashboard is localhost and tiny, so "always refetch" is
+        # the right trade — a mixed-version SPA is never acceptable.
+        self.send_header("Cache-Control", "no-cache, must-revalidate")
         self.end_headers()
         self.wfile.write(body)
 

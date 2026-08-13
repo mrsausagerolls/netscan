@@ -400,9 +400,13 @@ class InsApp(rumps.App):
                 "last_seen":       d.get("last_seen") or rec.get("last_seen"),
             })
         # Triage queue = unknown, non-self devices, ordered newest first.
+        # no_probe devices are excluded: "Ignore" in the triage strip sets that
+        # flag, and if the row stayed listed afterwards the button appeared to
+        # do nothing. Ignored devices remain in the main device list.
         triage = sorted(
             [d for d in enriched
-             if not d["is_known"] and not d["me"] and d.get("present", True)],
+             if not d["is_known"] and not d["me"] and d.get("present", True)
+             and not d.get("no_probe")],
             key=lambda d: -(d.get("first_seen") or 0),
         )
         return {

@@ -106,6 +106,7 @@ const ALERT_HELP = [
 // ── state ─────────────────────────────────────────────────────────────────
 let STATE   = null;
 let HISTORY = [];
+let _settingsFormsPainted = false;  // forms fill on tab entry, not per-refresh
 
 const TABS = ["overview", "devices", "activity", "settings"];
 // Pre-2.6 tabs map onto the consolidated IA (the menubar opens /#alerts).
@@ -131,7 +132,7 @@ const escHtml = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
 
 function timeAgo(tsSeconds) {
   if (!tsSeconds) return "just now";
-  const diff = Date.now() / 1000 - tsSeconds;
+  const diff = Math.max(0, Date.now() / 1000 - tsSeconds);
   if (diff < 60)      return `${Math.round(diff)}s ago`;
   if (diff < 3600)    return `${Math.round(diff / 60)}m ago`;
   if (diff < 86400)   return `${Math.round(diff / 3600)}h ago`;
@@ -147,14 +148,60 @@ function bestName(d) {
   return "";
 }
 
+// ── focus preservation across repaints ────────────────────────────────────
+// Painters rebuild lists with innerHTML; if keyboard focus was inside, the
+// focused node is detached and focus drops to <body>. Capture the focused
+// element's identity before a rebuild and re-focus its equivalent after.
+const _FOCUS_ATTRS = ["data-row-mac", "data-ack", "data-explain", "data-att",
+                      "data-wh-toggle", "data-wh-remove", "data-triage-act",
+                      "data-action", "data-sort"];
+function _focusIdentity(scope) {
+  const ae = document.activeElement;
+  if (!ae || !scope.contains(ae)) return null;
+  for (const attr of _FOCUS_ATTRS) {
+    const host = ae.closest(`[${attr}]`);
+    if (host) return `[${attr}="${CSS.escape(host.getAttribute(attr))}"]`;
+  }
+  return ae.id ? `#${CSS.escape(ae.id)}` : null;
+}
+function repaintPreservingFocus(scope, rebuild) {
+  const sel = _focusIdentity(scope);
+  rebuild();
+  if (sel) scope.querySelector(sel)?.focus();
+}
+
 // ── modal focus management ────────────────────────────────────────────────
-let _lastFocus = null;
+let _lastFocus = null;      // element that opened the current overlay
+let _lastFocusSel = null;   // identity selector fallback if it gets repainted
+function _rememberFocus(el) {
+  _lastFocus = el;
+  _lastFocusSel = null;
+  if (el && typeof el.closest === "function") {
+    for (const attr of _FOCUS_ATTRS) {
+      const host = el.closest(`[${attr}]`);
+      if (host) { _lastFocusSel = `[${attr}="${CSS.escape(host.getAttribute(attr))}"]`; break; }
+    }
+  }
+}
 function _restoreFocus() {
-  if (_lastFocus && typeof _lastFocus.focus === "function") _lastFocus.focus();
-  _lastFocus = null;
+  // A background repaint may have replaced the opener node while the overlay
+  // was open — focusing a detached node is a silent no-op that dumps focus to
+  // <body>. Fall back to the current element with the same identity.
+  let target = _lastFocus;
+  if (target && !document.contains(target) && _lastFocusSel) {
+    target = document.querySelector(_lastFocusSel);
+  }
+  if (target && typeof target.focus === "function" && document.contains(target)) {
+    target.focus();
+  }
+  _lastFocus = null; _lastFocusSel = null;
 }
 function _topmostDialog() {
-  for (const id of ["#onboarding", "#device-drawer", "#alert-drawer"]) {
+  // Order = stacking order, top first. The alert explainer always opens OVER
+  // the device drawer (it's launched from within other surfaces and paints
+  // later in the DOM), so it must be checked before the device drawer or
+  // Escape/Tab-trap act on the covered dialog instead of the visible one.
+  for (const id of ["#onboarding", "#alert-drawer", "#device-drawer"]) {
     const el = $(id);
     if (el && !el.hidden) return el;
   }
@@ -202,7 +249,13 @@ function showTab(name) {
   });
   $$(".tab").forEach(t => t.hidden = t.id !== `tab-${name}`);
   if (name === "activity") loadHistory();
-  if (name === "settings") loadRemoteAccess();
+  if (name === "settings") {
+    loadRemoteAccess();
+    // Populate the settings forms ON ENTRY only — never from the refresh
+    // loop, which would clobber whatever the user is typing (see
+    // paintActiveTab). Re-entering the tab re-syncs from stored state.
+    if (STATE) { _settingsFormsPainted = true; paintHook(); paintSettings(); }
+  }
   if (STATE) paintActiveTab();
 }
 $$(".navbtn").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
@@ -212,14 +265,33 @@ function paintActiveTab() {
   switch (CURRENT_TAB) {
     case "overview": paintStatement(); paintAttention(); paintGlance(); break;
     case "devices":  paintTriage(); paintDevices(); break;
-    case "activity": paintAlerts(); drawHistory(); break;
-    case "settings": paintWebhooks(); paintHook(); paintSettings(); break;
+    case "activity": paintAlerts(); refreshHistoryIfStale(); break;
+    case "settings":
+      // Only repaint the parts that are NOT free-form input: the webhook list
+      // and the sniffer status line. The settings FORMS (voice/shortcuts,
+      // keep-alive, router, hook) are painted once on tab entry — repainting
+      // them on every refresh stomped in-progress edits: a scan completes
+      // every ~30s, and every field except the single focused one silently
+      // reverted to its stored value, after which Save persisted the
+      // reverted form.
+      paintWebhooks(); paintSnifferStatus();
+      // Boot-on-#settings case: showTab ran before the first /api/state
+      // arrived, so the forms are still blank — populate them exactly once.
+      if (!_settingsFormsPainted) {
+        _settingsFormsPainted = true;
+        paintHook(); paintSettings();
+      }
+      break;
   }
 }
 
+let _refreshSeq = 0;
 async function refresh() {
+  const seq = ++_refreshSeq;
   try {
-    STATE = await fetch("/api/state").then(r => r.json());
+    const state = await fetch("/api/state").then(r => r.json());
+    if (seq !== _refreshSeq) return;   // a newer refresh already applied
+    STATE = state;
     paintHeader();
     announceNewAlerts();
     paintActiveTab();
@@ -234,26 +306,38 @@ function refreshSoon() {
   _refreshTimer = setTimeout(() => { _refreshTimer = null; refresh(); }, 300);
 }
 
+let _historyFetchedAt = 0;
 async function loadHistory() {
   try {
     HISTORY = await fetch("/api/history?limit=500").then(r => r.json());
+    _historyFetchedAt = Date.now();
   } catch (e) { /* keep whatever we had */ }
   drawHistory();
 }
 
+// Refetch at most every 25s while the Activity tab stays open, so the chart
+// gains new scan points instead of freezing at tab-entry data.
+function refreshHistoryIfStale() {
+  if (Date.now() - _historyFetchedAt > 25000) loadHistory();
+  else drawHistory();
+}
+
 // Screen-reader announcement when the unack count rises.
-let _prevUnack = null;
+let _prevMaxAlertId = null;
 function announceNewAlerts() {
   const el = document.getElementById("a11y-announce");
   if (!el || !STATE) return;
-  const n = STATE.unack_count || 0;
-  if (_prevUnack !== null && n > _prevUnack) {
-    const delta  = n - _prevUnack;
-    const newest = (STATE.alerts || [])[0];
-    el.textContent = `${delta} new security alert${delta === 1 ? "" : "s"}` +
+  // Key on alert IDs, not the aggregate unack count: a refresh where acks
+  // outnumber arrivals would otherwise silence a genuinely new alert.
+  const alerts = STATE.alerts || [];
+  const maxId = alerts.reduce((m, a) => Math.max(m, a.id || 0), 0);
+  if (_prevMaxAlertId !== null && maxId > _prevMaxAlertId) {
+    const fresh = alerts.filter(a => (a.id || 0) > _prevMaxAlertId);
+    const newest = fresh[0];
+    el.textContent = `${fresh.length} new security alert${fresh.length === 1 ? "" : "s"}` +
       (newest && newest.title ? `: ${newest.title}` : "") + ".";
   }
-  _prevUnack = n;
+  _prevMaxAlertId = maxId;
 }
 
 // ── header ────────────────────────────────────────────────────────────────
@@ -372,7 +456,8 @@ function paintAttention() {
       </div>`;
     return;
   }
-  list.innerHTML = items.slice(0, 6).map((it, i) => `
+  repaintPreservingFocus(list, () => {
+    list.innerHTML = items.slice(0, 6).map((it, i) => `
     <button class="attention-row" data-att="${i}">
       <span class="attention-glyph sev-${escHtml(it.sev)}">${it.icon}</span>
       <span class="attention-body">
@@ -381,6 +466,7 @@ function paintAttention() {
       </span>
       <span class="attention-when">${escHtml(it.when)}</span>
     </button>`).join("");
+  });
   list.querySelectorAll("[data-att]").forEach(el =>
     el.addEventListener("click", () => items[Number(el.dataset.att)].go()));
 }
@@ -438,7 +524,7 @@ function setListSort(key) {
   } else {
     LIST_SORT = { key, dir: "asc" };
   }
-  localStorage.setItem("ins.listSort", JSON.stringify(LIST_SORT));
+  try { localStorage.setItem("ins.listSort", JSON.stringify(LIST_SORT)); } catch {}
   applyListSortIndicators();
   if (STATE) paintDevices();
 }
@@ -447,8 +533,16 @@ function applyListSortIndicators() {
     const active = el.dataset.sort === LIST_SORT.key;
     el.classList.toggle("active", active);
     el.dataset.dir = active ? LIST_SORT.dir : "";
-    el.setAttribute("aria-sort",
-      active ? (LIST_SORT.dir === "asc" ? "ascending" : "descending") : "none");
+    // aria-sort is only valid on columnheader roles; expose the state through
+    // the button's accessible name instead so screen readers hear it.
+    const base = el.textContent.trim();
+    if (active) {
+      el.setAttribute("aria-label",
+        `${base}, sorted ${LIST_SORT.dir === "asc" ? "ascending" : "descending"}`);
+    } else {
+      el.removeAttribute("aria-label");
+    }
+    el.removeAttribute("aria-sort");
   });
 }
 $$(".dl-head .dl-sort").forEach(el =>
@@ -487,6 +581,10 @@ function currentBps(d, dir) {
   const s = d.bw_samples;
   if (!Array.isArray(s) || !s.length) return 0;
   const last = s[s.length - 1];
+  // Idle devices get no zero-rows from the sniffer, so the newest sample can
+  // be up to 30 min old — showing it as the "current" rate (and sorting on
+  // it) is a lie. Anything older than ~1.5 flush windows reads as 0.
+  if (Date.now() / 1000 - last[0] > 90) return 0;
   const bin  = last[1] / 60;
   const bout = last[2] / 60;
   if (dir === "in")  return bin;
@@ -548,7 +646,9 @@ function paintDevices() {
       : `<div class="empty">No devices yet. The first scan is on its way.</div>`;
     return;
   }
-  body.innerHTML = sortedForList(visible).map(deviceRow).join("");
+  repaintPreservingFocus(body, () => {
+    body.innerHTML = sortedForList(visible).map(deviceRow).join("");
+  });
   body.querySelectorAll("[data-action]").forEach(el => {
     el.addEventListener("click", (e) => { e.stopPropagation(); onDeviceAction(e); });
   });
@@ -579,19 +679,27 @@ function deviceRow(d) {
   if (d.vendor && d.vendor !== "—" && d.vendor !== name) subBits.push(d.vendor);
   if (away) subBits.push(`away · last seen ${timeAgo(d.last_seen)}`);
 
-  const ports = (d.ports || []).slice(0, 5).map(p =>
+  // Risky ports always render first so truncation can never hide a Telnet/RDP
+  // chip behind harmless ones; the +N overflow marker leads the row so it
+  // stays visible when the single-line cell clips from the right.
+  const allPorts = [...(d.ports || [])].sort((a, b) =>
+    (RISKY_PORTS.has(b) ? 1 : 0) - (RISKY_PORTS.has(a) ? 1 : 0) || a - b);
+  const ports = allPorts.slice(0, 5).map(p =>
     `<span class="port-chip${RISKY_PORTS.has(p) ? " risky" : ""}">${p}</span>`).join("");
-  const extraPorts = Math.max(0, (d.ports || []).length - 5);
+  const extraPorts = Math.max(0, allPorts.length - 5);
+  const portsTitle = allPorts.length ? `Open ports: ${allPorts.join(", ")}` : "";
 
   const action = d.me ? `<span class="dl-self">you</span>`
     : d.is_known
       ? `<button class="btn btn-ghost" data-action="unknown" data-mac="${escHtml(d.mac)}">Forget</button>`
       : `<button class="btn" data-action="known" data-mac="${escHtml(d.mac)}" data-name="${escHtml(name)}">Name</button>`;
 
+  const statusWord = d.me ? "this Mac" : d.is_known ? "known"
+                   : identifying ? "identifying" : "unknown";
+
   return `
-    <div class="dl-row${away ? " is-away" : ""}" data-row-mac="${escHtml(d.mac)}" tabindex="0" role="button"
-         aria-label="View details for ${escHtml(name || d.ip || "device")}">
-      <span class="dl-c"><span class="dc-status ${dotKlass}"></span></span>
+    <div class="dl-row${away ? " is-away" : ""}" data-row-mac="${escHtml(d.mac)}" tabindex="0" role="listitem">
+      <span class="dl-c"><span class="dc-status ${dotKlass}"></span><span class="sr-only">${statusWord}${away ? ", away" : ""}</span></span>
       <span class="dl-c dl-c-icon">${devIcon(d.device_type)}</span>
       <span class="dl-c dl-c-name">
         <span class="dev-name${name ? "" : " unnamed"}">${escHtml(name || "unnamed device")}</span>
@@ -600,7 +708,7 @@ function deviceRow(d) {
       <span class="dl-c dl-c-ip">${escHtml(d.ip || "—")}</span>
       <span class="dl-c dl-c-mac">${escHtml(d.mac || "—")}</span>
       ${bandwidthCell(d)}
-      <span class="dl-c dl-c-ports">${ports}${extraPorts ? `<span class="dl-ports-more">+${extraPorts}</span>` : ""}</span>
+      <span class="dl-c dl-c-ports" title="${escHtml(portsTitle)}">${extraPorts ? `<span class="dl-ports-more">+${extraPorts}</span>` : ""}${ports}</span>
       <span class="dl-c dl-c-actions">${action}</span>
     </div>`;
 }
@@ -609,17 +717,22 @@ async function onDeviceAction(e) {
   const el = e.currentTarget;
   const mac = el.dataset.mac;
   const action = el.dataset.action;
-  if (action === "known") {
-    const name = prompt("Name for this device:", el.dataset.name || "");
-    if (name === null) return;
-    await api("/api/known/add", { mac, name });
-  } else if (action === "unknown") {
-    await api("/api/known/remove", { mac });
-  } else if (action === "wol") {
-    await api("/api/wol", { mac });
-  } else if (action === "probe") {
-    const newState = el.dataset.state !== "1";
-    await api("/api/devices/no_probe", { mac, no_probe: newState });
+  try {
+    if (action === "known") {
+      const name = prompt("Name for this device:", el.dataset.name || "");
+      if (name === null) return;
+      await api("/api/known/add", { mac, name });
+    } else if (action === "unknown") {
+      await api("/api/known/remove", { mac });
+    } else if (action === "wol") {
+      await api("/api/wol", { mac });
+    } else if (action === "probe") {
+      const newState = el.dataset.state !== "1";
+      await api("/api/devices/no_probe", { mac, no_probe: newState });
+    }
+  } catch (err) {
+    const a11y = document.getElementById("a11y-announce");
+    if (a11y) a11y.textContent = "That didn't save: couldn't reach INS. Try again.";
   }
   refresh();
 }
@@ -640,6 +753,16 @@ function paintTriage() {
   $("#triage-heading").textContent =
     `${items.length} new device${items.length === 1 ? "" : "s"} to name`;
 
+  // A typed-but-unsaved name must survive the rebuild even after the input
+  // loses focus — collect values that differ from their suggestion first.
+  const typed = {};
+  list.querySelectorAll(".triage-row").forEach(row => {
+    const input = row.querySelector(".triage-name");
+    if (input && input.value !== (input.dataset.suggested ?? "")) {
+      typed[row.dataset.mac] = input.value;
+    }
+  });
+
   list.innerHTML = items.map(d => {
     const suggested = bestName(d);
     return `
@@ -650,11 +773,16 @@ function paintTriage() {
           <span class="triage-sub">${escHtml(d.ip)} · ${escHtml(d.mac)} · first seen ${escHtml(timeAgo(d.first_seen || 0))}</span>
           ${d.fingerprint ? `<span class="triage-fp">${escHtml(d.fingerprint)}</span>` : ""}
         </span>
-        <input type="text" class="triage-name" aria-label="Device name" placeholder="Name this device" value="${escHtml(suggested)}">
+        <input type="text" class="triage-name" aria-label="Device name" placeholder="Name this device" data-suggested="${escHtml(suggested)}" value="${escHtml(suggested)}">
         <button class="btn" data-triage-act="known">Save</button>
         <button class="btn btn-ghost" data-triage-act="block" title="Stop actively probing this device">Ignore</button>
       </div>`;
   }).join("");
+
+  Object.entries(typed).forEach(([mac, val]) => {
+    const input = list.querySelector(`.triage-row[data-mac="${CSS.escape(mac)}"] .triage-name`);
+    if (input) input.value = val;
+  });
 
   list.querySelectorAll("[data-triage-act]").forEach(b => {
     b.addEventListener("click", async () => {
@@ -691,7 +819,9 @@ function paintAlerts() {
     list.innerHTML = `<div class="empty">Nothing has needed your attention yet. New devices and risky ports will show up here.</div>`;
     return;
   }
-  list.innerHTML = alerts.map(alertRow).join("");
+  repaintPreservingFocus(list, () => {
+    list.innerHTML = alerts.map(alertRow).join("");
+  });
   wireAlertActions(list);
 }
 
@@ -734,7 +864,7 @@ $("#ack-all").addEventListener("click", async () => {
 function openExplainer(kind) {
   const help = ALERT_HELP.find(([prefix]) => kind.startsWith(prefix))?.[1];
   if (!help) return;
-  _lastFocus = document.activeElement;
+  _rememberFocus(document.activeElement);
   $("#drawer-title").textContent = help.title;
   $("#drawer-body").innerHTML = `
     <h3>Why this matters</h3>
@@ -754,17 +884,19 @@ function closeExplainer() {
   _restoreFocus();
 }
 $("#drawer-close").addEventListener("click", closeExplainer);
-$("#drawer-scrim").addEventListener("click", closeExplainer);
 
 // ── history chart ─────────────────────────────────────────────────────────
 function drawHistory() {
   const canvas = $("#history-chart");
   if (!canvas || CURRENT_TAB !== "activity") return;
-  const css = (name, fb) =>
-    (getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fb);
-  const accent = css("--accent", "#7fc7cf");
-  const grid   = css("--line", "rgba(255,255,255,.07)");
-  const labelC = css("--text-3", "#7c8698");
+  // Canvas colors are hex/rgba literals, NOT the oklch() tokens: Safari before
+  // 16.4 accepts oklch in CSS-adjacent paths inconsistently and silently
+  // IGNORES invalid canvas color strings (keeping the previous style), which
+  // rendered the whole chart invisible. These literals visually match the
+  // --accent / --line / --text-3 tokens.
+  const accent = "#7ac3cd";
+  const grid   = "rgba(148,163,184,.14)";
+  const labelC = "#7c8698";
   const mono   = "10px 'Geist Mono', ui-monospace, monospace";
   const dpr = window.devicePixelRatio || 1;
   const w = canvas.clientWidth, h = canvas.clientHeight;
@@ -834,7 +966,7 @@ async function openDeviceStory(mac) {
   try {
     const story = await fetch(`/api/device/${encodeURIComponent(mac)}`).then(r => r.json());
     if (!story || story.error) return;
-    _lastFocus = opener;
+    _rememberFocus(opener);
     const d = story.device || {};
     const fpHints = d.fingerprint || {};
     const fpText = typeof fpHints === "string" ? fpHints
@@ -875,7 +1007,12 @@ async function openDeviceStory(mac) {
       : "";
 
     const routerKind = (STATE.settings && STATE.settings.router_kind) || "none";
-    const isMe = !!d.me;
+    // /api/device/<mac> serializes the stored row, which carries no `me` flag —
+    // only /api/state's enriched rows do. Resolve it from the loaded state, or
+    // the drawer offers "Block on router" / "Don't probe" / Wake-on-LAN for the
+    // very Mac running INS (blocking yourself kicks the scanner off the WiFi).
+    const stateRow = (STATE.devices || []).find(x => x.mac === (d.mac || mac));
+    const isMe = !!(d.me || (stateRow && stateRow.me));
     const routerButtons = (routerKind === "none" || isMe) ? "" : `
       <div class="dstory-router-actions">
         <button class="btn btn-danger" id="router-block-mac" data-mac="${escHtml(d.mac || mac)}">Block on router</button>
@@ -931,8 +1068,12 @@ async function openDeviceStory(mac) {
         const macAddr = btn.dataset.mac;
         if (verb === "block" && !confirm(`Block ${macAddr} on your router? It will be kicked off the WiFi immediately.`)) return;
         status.textContent = `${verb}ing…`;
-        const r = await api(path, { mac: macAddr });
-        status.textContent = r.ok ? `${verb}ed ✓` : `${verb} failed: ${r.error || "unknown"}`;
+        try {
+          const r = await api(path, { mac: macAddr });
+          status.textContent = r.ok ? `${verb}ed ✓` : `${verb} failed: ${r.error || "unknown"}`;
+        } catch (e) {
+          status.textContent = `${verb} failed: couldn't reach INS.`;
+        }
       });
     wireRouter("router-block-mac",   "/api/router/block",   "block");
     wireRouter("router-unblock-mac", "/api/router/unblock", "unblock");
@@ -988,7 +1129,13 @@ function closeDeviceDrawer() {
   _restoreFocus();
 }
 $("#device-drawer-close").addEventListener("click", closeDeviceDrawer);
-$("#drawer-scrim").addEventListener("click", closeDeviceDrawer);
+// One scrim handler that dismisses only the TOPMOST overlay — binding both
+// close functions here closed the explainer AND the drawer under it in a
+// single click, dumping the user's drawer context.
+$("#drawer-scrim").addEventListener("click", () => {
+  if (!$("#alert-drawer").hidden)  { closeExplainer(); return; }
+  if (!$("#device-drawer").hidden) { closeDeviceDrawer(); }
+});
 
 // ── onboarding tour ───────────────────────────────────────────────────────
 const TOUR_STEPS = [
@@ -1073,12 +1220,31 @@ function paintWebhooks() {
 }
 
 $("#wh-add").addEventListener("click", async () => {
-  const url = $("#wh-url").value.trim();
+  const status = $("#wh-status");
+  let url = $("#wh-url").value.trim();
   if (!url) return;
+  // Webhook URLs are usually copied from Discord/Slack UIs without a scheme —
+  // default those to https. A URL that HAS a scheme other than http(s) is
+  // wrong outright; reject it here rather than mangling it with a prefix.
+  if (/^[a-z][a-z0-9+.-]*:/i.test(url)) {
+    if (!/^https?:\/\//i.test(url)) {
+      if (status) status.textContent = "Not added: the URL must start with http:// or https://";
+      return;
+    }
+  } else {
+    url = "https://" + url;
+  }
   const label = $("#wh-label").value.trim();
   const min_severity = $("#wh-severity").value;
-  await api("/api/webhooks/add", { url, label, min_severity });
+  const r = await api("/api/webhooks/add", { url, label, min_severity });
+  if (r && r.error) {
+    // Keep the typed values so the user can correct them — silently clearing
+    // the form on a rejection made Add look like it worked while adding nothing.
+    if (status) status.textContent = `Not added: ${r.error}`;
+    return;
+  }
   $("#wh-label").value = ""; $("#wh-url").value = "";
+  if (status) { status.textContent = "Webhook added."; setTimeout(() => { status.textContent = ""; }, 2500); }
   refresh();
 });
 
@@ -1094,28 +1260,34 @@ $("#hook-save").addEventListener("click", async () => {
 });
 
 // ── settings: voice / shortcuts / keep-alive / sniffer ────────────────────
+// Settings FORMS — called on tab entry only (see showTab), never per-refresh,
+// so in-progress edits are never overwritten by a background scan tick.
 function paintSettings() {
   const s = (STATE.settings || {});
   const voiceEl = $("#setting-voice");
   const newEl   = $("#setting-shortcut-new");
   const altEl   = $("#setting-shortcut-alert");
   const kaEl    = $("#setting-keep-alive");
-  if (voiceEl && document.activeElement !== voiceEl) voiceEl.checked = !!s.voice_enabled;
-  if (newEl   && document.activeElement !== newEl)   newEl.value     = s.shortcut_on_new_device || "";
-  if (altEl   && document.activeElement !== altEl)   altEl.value     = s.shortcut_on_alert || "";
-  if (kaEl    && document.activeElement !== kaEl)    kaEl.checked    = !!s.keep_alive;
-  const snEl = $("#sniffer-status");
-  if (snEl) {
-    const sn = STATE.sniffer || {};
-    if (sn.running) {
-      snEl.textContent = `Running: ${(sn.packets || 0).toLocaleString()} packets observed`;
-    } else if (sn.reason) {
-      snEl.textContent = `Not active: ${sn.reason}`;
-    } else {
-      snEl.textContent = "Not active. Run tools/enable_sniffer.sh with sudo, then restart INS.";
-    }
-  }
+  if (voiceEl) voiceEl.checked = !!s.voice_enabled;
+  if (newEl)   newEl.value     = s.shortcut_on_new_device || "";
+  if (altEl)   altEl.value     = s.shortcut_on_alert || "";
+  if (kaEl)    kaEl.checked    = !!s.keep_alive;
   paintRouterSettings();
+  paintSnifferStatus();
+}
+
+// Read-only status line — safe to refresh continuously.
+function paintSnifferStatus() {
+  const snEl = $("#sniffer-status");
+  if (!snEl) return;
+  const sn = STATE.sniffer || {};
+  if (sn.running) {
+    snEl.textContent = `Running: ${(sn.packets || 0).toLocaleString()} packets observed`;
+  } else if (sn.reason) {
+    snEl.textContent = `Not active: ${sn.reason}`;
+  } else {
+    snEl.textContent = "Not active. Run tools/enable_sniffer.sh with sudo, then restart INS.";
+  }
 }
 
 $("#keep-alive-save")?.addEventListener("click", async () => {
@@ -1237,26 +1409,37 @@ $("#router-save")?.addEventListener("click", async () => {
   };
   const pwd = $("#router-pass").value;
   if (pwd) body.router_pass = pwd;
-  await api("/api/settings/save", body);
-  $("#router-pass").value = "";
-  status.textContent = "Saved";
-  setTimeout(() => { status.textContent = ""; }, 1500);
+  try {
+    await api("/api/settings/save", body);
+    $("#router-pass").value = "";
+    status.textContent = "Saved";
+  } catch (e) {
+    status.textContent = "Save failed: couldn't reach INS.";
+  }
+  setTimeout(() => { status.textContent = ""; }, 2500);
   refresh();
 });
 $("#router-test")?.addEventListener("click", async () => {
   const status = $("#router-status");
   status.textContent = "Testing…";
-  const r = await fetch("/api/router/test", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"}).then(r => r.json());
-  status.textContent = r.ok ? `Connected: ${r.message}` : `Failed: ${r.message}`;
+  try {
+    const r = await fetch("/api/router/test", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"}).then(r => r.json());
+    status.textContent = r.ok ? `Connected: ${r.message}` : `Failed: ${r.message}`;
+  } catch (e) {
+    status.textContent = "Failed: couldn't reach INS.";
+  }
 });
 
 // ── SSE live updates ──────────────────────────────────────────────────────
 let SSE_STATE = "connecting";   // "live" | "offline" | "polling"
+let _es = null;                 // current EventSource, if any
 
 function startSSE() {
   if (typeof EventSource === "undefined") { SSE_STATE = "polling"; updateLivePill(); return; }
+  if (_es) { try { _es.close(); } catch {} _es = null; }
   try {
     const es = new EventSource("/api/stream");
+    _es = es;
     const onEvent = () => refreshSoon();
     es.addEventListener("scan.completed", onEvent);
     es.addEventListener("alert.raised",   onEvent);
@@ -1270,6 +1453,21 @@ function startSSE() {
     };
   } catch (e) { SSE_STATE = "polling"; updateLivePill(); }
 }
+
+// Release the SSE socket while this tab is hidden. Browsers cap HTTP/1.x at
+// six connections per host ACROSS ALL TABS, and the menubar's Open Dashboard
+// opens a new tab each click — so a handful of accumulated tabs each pinning a
+// permanent /api/stream socket exhausted the pool and every fetch() in every
+// tab (Rescan, Name, Save…) hung silently. Hidden tabs now hold zero
+// connections and re-sync the moment they're focused again.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    if (_es) { try { _es.close(); } catch {} _es = null; }
+  } else {
+    refresh();
+    startSSE();
+  }
+});
 
 function updateLivePill() {
   const pill = $(".live-pill");
@@ -1381,15 +1579,20 @@ if (rescanBtn) {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Tab") { _trapTab(e); return; }
   if (e.key !== "Escape") return;
+  // Close the TOPMOST overlay first — the alert explainer stacks over the
+  // device drawer, so it must be dismissed before the drawer beneath it.
   if (!$("#onboarding").hidden)      { finishTour(); return; }
-  if (!$("#device-drawer").hidden)   { closeDeviceDrawer(); return; }
   if (!$("#alert-drawer").hidden)    { closeExplainer(); return; }
+  if (!$("#device-drawer").hidden)   { closeDeviceDrawer(); return; }
 });
 
 // ── boot ──────────────────────────────────────────────────────────────────
 showTab(CURRENT_TAB);
 refresh().then(showOnboardingIfNeeded);
-startSSE();
-// Fallback polling — SSE pushes deltas instantly when connected.
-setInterval(refresh, 30000);
+// Don't pin an SSE socket from a tab that loads hidden (restored/background
+// tab) — the visibilitychange handler opens it on first focus.
+if (!document.hidden) startSSE();
+// Fallback polling — SSE pushes deltas instantly when connected. Hidden tabs
+// skip the poll entirely (they hold no connections; they re-sync on focus).
+setInterval(() => { if (!document.hidden) refresh(); }, 30000);
 setInterval(updateLivePill, 15000);

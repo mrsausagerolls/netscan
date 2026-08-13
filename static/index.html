@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Inglorious Network Scanner</title>
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/style.css?v=2.6.1">
 </head>
 <body>
 <!-- Screen-reader announcements for newly-raised security alerts. -->
@@ -101,7 +101,7 @@
         <option value="unknown">Unknown</option>
         <option value="unidentified">Still identifying</option>
       </select>
-      <div class="legend" aria-hidden="true">
+      <div class="legend">
         <span class="legend-item"><span class="dot dot-me"></span>This Mac</span>
         <span class="legend-item"><span class="dot dot-known"></span>Known</span>
         <span class="legend-item"><span class="dot dot-unknown"></span>Unknown</span>
@@ -110,7 +110,7 @@
     </div>
 
     <div class="device-list" id="device-list">
-      <div class="dl-head" role="row">
+      <div class="dl-head">
         <span class="dl-c dl-c-status" aria-hidden="true"></span>
         <span class="dl-c dl-c-icon" aria-hidden="true"></span>
         <button type="button" class="dl-c dl-c-name dl-sort" data-sort="name">Device</button>
@@ -120,7 +120,7 @@
         <button type="button" class="dl-c dl-c-ports dl-sort" data-sort="ports">Ports</button>
         <span class="dl-c dl-c-actions" aria-hidden="true"></span>
       </div>
-      <div class="dl-body" id="device-list-body"></div>
+      <div class="dl-body" id="device-list-body" role="list"></div>
     </div>
   </section>
 
@@ -212,6 +212,7 @@
         </select>
         <button id="wh-add" class="btn">Add</button>
       </div>
+      <div class="setting-row"><span class="settings-status" id="wh-status"></span></div>
       <div class="webhook-list" id="webhook-list"></div>
     </section>
 
@@ -389,6 +390,6 @@
   <span>Inglorious Labs</span>
 </footer>
 
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=2.6.1"></script>
 </body>
 </html>

@@ -2025,3 +2025,47 @@ def test_device_story_decodes_percent_encoded_mac(tmp_path):
     code, body = sent[-1]
     assert code == 200
     assert b"TestVendor" in body
+
+
+def test_lan_state_redacts_secret_bearing_fields():
+    """A LAN token holder reading /api/state must never receive webhook URLs,
+    the join-hook script, or router settings — the token grants read access to
+    network state, not to capability secrets."""
+    import dashboard, io
+    import json as _json
+
+    full_state = {
+        "devices": [], "alerts": [], "health": None, "count": 0,
+        "webhooks": [{"url": "https://discord.com/api/webhooks/secret"}],
+        "hook": "say hi", "settings": {"router_host": "10.0.0.1"},
+    }
+    dashboard._Handler.get_state = staticmethod(lambda: dict(full_state))
+    dashboard._Handler.lan_enabled = True
+    dashboard._Handler.lan_token = "tok"
+    dashboard._Handler.allowed_hosts = {"127.0.0.1:8765"}
+
+    sent = []
+    def run(client_ip, headers):
+        h = dashboard._Handler.__new__(dashboard._Handler)
+        h.client_address = (client_ip, 999)
+        h.command = "GET"
+        h.path = "/api/state"
+        h.headers = {"Host": "127.0.0.1:8765", **headers}
+        h._send = lambda code, ctype, body: sent.append((code, _json.loads(body)))
+        h.send_response = lambda *a: None
+        h.send_header = lambda *a: None
+        h.end_headers = lambda: None
+        h.do_GET()
+        return sent[-1]
+
+    code, body = run("192.168.1.50", {"Authorization": "Bearer tok"})
+    assert code == 200
+    for secret in ("webhooks", "hook", "settings"):
+        assert secret not in body, f"{secret} leaked to LAN client"
+    assert "devices" in body
+
+    code, body = run("127.0.0.1", {})
+    assert code == 200 and "webhooks" in body   # loopback keeps the full state
+
+    dashboard._Handler.lan_enabled = False
+    dashboard._Handler.lan_token = None

@@ -86,7 +86,8 @@ body{
   -webkit-font-smoothing:antialiased;
   min-height:100vh;
   display:flex;flex-direction:column;
-  overflow-x:clip; /* the statement's severity wash bleeds past the column */
+  overflow-x:hidden; /* Safari 15.x fallback: clip is 16.0+ */
+  overflow-x:clip;   /* the statement's severity wash bleeds past the column */
 }
 
 .sr-only{
@@ -182,7 +183,7 @@ input,select,textarea{font:inherit;color:inherit}
 }
 .navcount{
   font-family:var(--mono);font-size:var(--fs-0);
-  color:var(--text-3);
+  color:var(--text-2);
   background:var(--surface-2);
   border:1px solid var(--line);
   padding:0 6px;border-radius:999px;min-width:18px;height:17px;
@@ -387,8 +388,8 @@ input[type=checkbox]:checked::after{
 .attention-glyph.sev-warning{color:var(--warn)}
 .attention-glyph.sev-info{color:var(--text-3)}
 .attention-body{flex:1;min-width:0}
-.attention-title{color:var(--text);font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.attention-sub{color:var(--text-3);font-size:var(--fs-1);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.attention-title{display:block;color:var(--text);font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.attention-sub{display:block;color:var(--text-3);font-size:var(--fs-1);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .attention-when{font-family:var(--mono);font-size:var(--fs-1);color:var(--text-3);flex-shrink:0}
 .attention-clear{
   display:flex;align-items:center;gap:12px;
@@ -481,9 +482,9 @@ input[type=checkbox]:checked::after{
 }
 .dl-row:hover{background:var(--surface)}
 .dl-row + .dl-row{border-top:1px solid var(--line)}
-.dl-row.is-away{opacity:.5}
+.dl-row.is-away{opacity:.72}
 
-.dc-status{width:8px;height:8px;border-radius:50%;justify-self:center}
+.dc-status{display:inline-block;width:8px;height:8px;border-radius:50%}
 .s-me{background:var(--accent);box-shadow:0 0 0 3px var(--accent-tint)}
 .s-known{background:var(--text-3)}
 .s-unknown{background:var(--warn);box-shadow:0 0 0 3px var(--warn-tint)}
@@ -495,12 +496,14 @@ input[type=checkbox]:checked::after{
 
 .dl-c-name{min-width:0}
 .dev-name{
+  display:block;
   font-size:var(--fs-3);font-weight:550;color:var(--text);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
 .dev-name.unnamed{color:var(--text-3);font-weight:450;font-style:italic}
 .dev-sub{
-  font-size:var(--fs-1);color:var(--text-3);margin-top:0;
+  display:block;
+  font-size:var(--fs-1);color:var(--text-3);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
 .dl-c-ip,.dl-c-mac{
@@ -517,10 +520,10 @@ input[type=checkbox]:checked::after{
 .bw-rate{font-family:var(--mono);font-size:10.5px;color:var(--text-3);white-space:nowrap}
 .bw-empty{color:var(--text-3);font-size:var(--fs-1)}
 
-.dl-c-ports{display:flex;gap:4px;flex-wrap:wrap;align-items:center;overflow:hidden;max-height:22px}
+.dl-c-ports{display:flex;gap:4px;flex-wrap:nowrap;align-items:center;overflow:hidden;min-width:0}
 .port-chip{
   font-family:var(--mono);font-size:10.5px;
-  color:var(--text-3);
+  color:var(--text-2);flex-shrink:0;
   background:var(--surface-2);
   border:1px solid var(--line);
   padding:1px 6px;border-radius:5px;line-height:1.5;
@@ -529,7 +532,7 @@ input[type=checkbox]:checked::after{
   color:var(--crit);border-color:var(--crit-line);background:var(--crit-tint);
   font-weight:600;
 }
-.dl-ports-more{font-family:var(--mono);font-size:10.5px;color:var(--text-3)}
+.dl-ports-more{font-family:var(--mono);font-size:10.5px;color:var(--text-2);flex-shrink:0}
 
 .dl-c-actions{display:flex;justify-content:flex-end}
 .dl-self{
@@ -556,10 +559,10 @@ input[type=checkbox]:checked::after{
 .triage-icon{color:var(--text-2);display:grid;place-items:center;width:22px;flex-shrink:0}
 .triage-icon svg{width:19px;height:19px}
 .triage-info{flex:1;min-width:0}
-.triage-title{color:var(--text);font-weight:550;font-size:var(--fs-2)}
+.triage-title{display:block;color:var(--text);font-weight:550;font-size:var(--fs-2)}
 .triage-vendor{color:var(--text-3);font-weight:450;margin-left:6px}
-.triage-sub{font-family:var(--mono);font-size:var(--fs-1);color:var(--text-3);margin-top:1px}
-.triage-fp{font-size:var(--fs-1);color:var(--text-2);margin-top:1px}
+.triage-sub{display:block;font-family:var(--mono);font-size:var(--fs-1);color:var(--text-3);margin-top:1px}
+.triage-fp{display:block;font-size:var(--fs-1);color:var(--text-2);margin-top:1px}
 .triage-name{width:200px;flex-shrink:0}
 
 /* ── Alerts ─────────────────────────────────────────────────────────────── */
@@ -576,7 +579,7 @@ input[type=checkbox]:checked::after{
 }
 .alert-row:hover{background:var(--surface)}
 .alert-row + .alert-row{border-top:1px solid var(--line)}
-.alert-row.is-ack{opacity:.55}
+.alert-row.is-ack{opacity:.72}
 .alert-sev{flex-shrink:0;padding-top:1px}
 .sev-critical .alert-sev{color:var(--crit)}
 .sev-warning .alert-sev{color:var(--warn)}
@@ -617,8 +620,10 @@ input[type=checkbox]:checked::after{
 }
 .wifi-list{
   border:1px solid var(--line);border-radius:var(--r-l);
-  background:var(--bg-raised);overflow:hidden;
+  background:var(--bg-raised);
+  overflow-x:auto;   /* fixed columns scroll on narrow screens, never crop */
 }
+.wh-head,.wifi-row{min-width:640px}
 .wifi-list .empty{padding:22px 16px}
 .wh-head,.wifi-row{
   display:grid;
@@ -671,7 +676,9 @@ input[type=checkbox]:checked::after{
   font-family:var(--mono);font-size:var(--fs-1);
   background:var(--bg-raised);border:1px solid var(--line-2);
   border-radius:var(--r-s);padding:6px 10px;
-  color:var(--text-2);word-break:break-all;user-select:all;
+  color:var(--text-2);word-break:break-all;
+  -webkit-user-select:all;   /* Safari only honors the prefixed form */
+  user-select:all;
   margin-top:2px;
 }
 .remote-token{color:var(--accent)}
@@ -688,7 +695,7 @@ input[type=checkbox]:checked::after{
   padding:10px 4px;font-size:var(--fs-2);
 }
 .wh-row + .wh-row{border-top:1px solid var(--line)}
-.wh-row.disabled{opacity:.5}
+.wh-row.disabled{opacity:.72}
 .wh-label{font-weight:550;color:var(--text);min-width:120px}
 .wh-url{
   font-family:var(--mono);font-size:var(--fs-1);color:var(--text-3);
@@ -833,7 +840,8 @@ input[type=checkbox]:checked::after{
   .statement-line{font-size:var(--fs-5)}
   .glance-strip{flex-wrap:wrap}
   .glance-cell{min-width:44%}
-  .glance-cell + .glance-cell{border-left:0;border-top:1px solid var(--line)}
+  .glance-cell + .glance-cell{border-left:0}
+  .glance-cell:nth-child(n+3){border-top:1px solid var(--line)}
   .dl-head,.dl-row{grid-template-columns:26px 34px minmax(120px,1fr) 100px 70px}
   .dl-c-ports{display:none}
   .webhook-form{grid-template-columns:1fr}

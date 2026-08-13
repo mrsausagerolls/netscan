@@ -77,12 +77,12 @@ camera is a soft tap on the score; a rogue DHCP server cuts it in half. The
 score gives non-technical users an at-a-glance read; the reason list tells
 them where to act first.
 
-## Triage mode
+## Naming new devices
 
-A purpose-built Triage tab queues every unknown device so you can name them
-or block them in a single sitting — first-launch, after a party, after the
-router rebooted. Bulk-mark, individual rename, "don't probe this device"
-toggle for fragile IoT.
+Every unknown device queues in a strip pinned to the top of the Devices tab
+so you can name or ignore them in a single sitting — first-launch, after a
+party, after the router rebooted. Bulk-mark, individual rename, and an
+Ignore action that also stops probing fragile IoT.
 
 ## Launchers
 
@@ -116,9 +116,11 @@ Three ways to open INS, all installed automatically by `get.sh` /
 Open from the menubar (`Open Dashboard ↗ localhost:8765`), the Applications
 launcher, the `ins` CLI, or directly at `http://localhost:8765`.
 
-Tabs: **Overview** (health score + recent alerts), **Devices**, **Triage**,
-**Security** (full alert history), **History** (population over time), and
-**Settings** (notifications, webhooks, join hook, privacy).
+Tabs: **Overview** (the status statement, everything needing attention, and
+a network summary), **Devices** (the full list, with new-device naming pinned
+on top), **Activity** (alert history, devices-over-time chart, Wi-Fi survey),
+and **Settings** (remote access, notifications, webhooks, router, join hook,
+privacy).
 
 Every alert has a *"What does this mean?"* button that opens an inline drawer
 with a plain-English explanation and the recommended fix.
@@ -144,7 +146,10 @@ warning / critical only).
 
 ### Security model
 
-The server binds to `127.0.0.1` only. Mutating endpoints (`/api/known/*`,
+The server binds to `127.0.0.1` only, unless you explicitly enable
+**Settings → Remote access** (off by default), which serves a token-gated,
+read-only view on your LAN for the iOS companion — see SECURITY.md.
+Mutating endpoints (`/api/known/*`,
 `/api/hook`, `/api/wol`, `/api/triage/*`, `/api/devices/no_probe`) require a
 same-origin `Origin` or `Referer` header; cross-origin requests are rejected
 with HTTP 403. The join hook stores an arbitrary shell command, so this check
