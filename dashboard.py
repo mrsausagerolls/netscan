@@ -20,7 +20,7 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from socketserver import ThreadingMixIn
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 
 import events
 
@@ -463,7 +463,10 @@ class _Handler(BaseHTTPRequestHandler):
     # ── /api/device/<mac> — per-device story ─────────────────────────────
 
     def _send_device_story(self, mac: str):
-        mac = (mac or "").upper().replace("-", ":")
+        # The SPA encodeURIComponent()s the MAC, so colons arrive as %3A —
+        # decode before normalizing or every lookup 404s (and the frontend
+        # swallows the error, so the drawer just silently never opens).
+        mac = unquote(mac or "").upper().replace("-", ":")
         device = self.store.get_device(mac)
         if not device:
             self._send(404, "application/json", b'{"error":"unknown mac"}')

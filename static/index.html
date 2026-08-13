@@ -7,332 +7,262 @@
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<!-- Screen-reader announcements for newly-raised security alerts. Visually
-     hidden; updated by app.js when the unacknowledged alert count rises. -->
+<!-- Screen-reader announcements for newly-raised security alerts. -->
 <div id="a11y-announce" class="sr-only" aria-live="assertive" aria-atomic="true"></div>
-<header>
+
+<header class="app-header">
   <div class="brand">
     <div class="brand-mark" aria-hidden="true">
-      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="9.25"/>
         <circle cx="12" cy="12" r="5"/>
-        <circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/>
+        <circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/>
         <path d="M12 2.5v3.2M12 18.3v3.2M2.5 12h3.2M18.3 12h3.2"/>
       </svg>
     </div>
     <div class="brand-stack">
-      <div class="brand-name">Inglorious</div>
-      <div class="brand-sub">Network Scanner</div>
+      <span class="brand-name">Inglorious</span>
+      <span class="brand-sub">Network Scanner</span>
     </div>
   </div>
 
-  <div class="hdiv"></div>
-
-  <div class="hstat">
-    <div class="hstat-l">Network</div>
-    <div class="hstat-v" id="hdr-ssid">—</div>
-  </div>
-  <div class="hstat hstat-opt">
-    <div class="hstat-l">CIDR</div>
-    <div class="hstat-v" id="hdr-net">—</div>
-  </div>
-  <div class="hstat hstat-opt" title="Public IPv4 reported by the router via UPnP. All devices on this LAN share this one address — NAT means individual external IPs don't exist for IPv4.">
-    <div class="hstat-l">Public IP</div>
-    <div class="hstat-v" id="hdr-public-ip">—</div>
-  </div>
-  <div class="hstat">
-    <div class="hstat-l">Devices</div>
-    <div class="hstat-v" id="hdr-count">0</div>
-  </div>
-  <div class="hstat">
-    <div class="hstat-l">Alerts</div>
-    <div class="hstat-v" id="hdr-alerts">0</div>
+  <div class="net-facts" aria-label="Network facts">
+    <div class="fact"><span class="fact-l">Network</span><span class="fact-v" id="hdr-ssid">—</span></div>
+    <div class="fact fact-opt"><span class="fact-l">Subnet</span><span class="fact-v mono" id="hdr-net">—</span></div>
+    <div class="fact fact-opt" title="Public IPv4 reported by the router via UPnP. All devices on this LAN share this one address."><span class="fact-l">Public IP</span><span class="fact-v mono" id="hdr-public-ip">—</span></div>
   </div>
 
-  <div class="hright">
-    <div class="live-pill"><span class="live-dot"></span> live</div>
-    <div class="scantime" id="hdr-scantime">—</div>
-    <button class="btn btn-primary btn-tiny" id="hdr-rescan" title="Rescan the network now">↻ Rescan</button>
+  <div class="header-right">
+    <div class="live-pill" role="status"><span class="live-dot" aria-hidden="true"></span><span class="live-label">live</span></div>
+    <span class="scantime mono" id="hdr-scantime">—</span>
+    <button class="btn btn-primary" id="hdr-rescan" title="Rescan the network now">Rescan</button>
   </div>
 </header>
 
-<div class="hnav-bar">
-  <nav class="hnav">
-    <button class="navbtn active" data-tab="overview">Overview</button>
-    <button class="navbtn" data-tab="devices">Devices</button>
-    <button class="navbtn" data-tab="triage">Triage <span class="badge" id="nav-triage-badge"></span></button>
-    <button class="navbtn" data-tab="alerts">Security <span class="badge" id="nav-alert-badge"></span></button>
-    <button class="navbtn" data-tab="history">History</button>
-    <button class="navbtn" data-tab="wifi">Wi-Fi</button>
-    <button class="navbtn" data-tab="settings">Settings</button>
-  </nav>
-</div>
+<nav class="app-nav" aria-label="Primary">
+  <button class="navbtn active" data-tab="overview">Overview</button>
+  <button class="navbtn" data-tab="devices">Devices <span class="navcount" id="nav-triage-badge"></span></button>
+  <button class="navbtn" data-tab="activity">Activity <span class="navcount navcount-alert" id="nav-alert-badge"></span></button>
+  <button class="navbtn" data-tab="settings">Settings</button>
+</nav>
 
 <div class="ssid-banner" id="ssid-banner" hidden>
-  <div class="ssid-banner-icon">⚠️</div>
-  <div class="ssid-banner-body">
-    <strong>Network name unavailable</strong> — INS keeps scanning,
-    but macOS needs Location Services to read your WiFi SSID.
-    Open <em>System Settings → Privacy &amp; Security → Location Services</em>
-    and toggle access on for <em>Inglorious Network Scanner</em>
-    (or <em>Python</em> if you're running from source).
+  <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.66 3.62 1.95 18.5a1.55 1.55 0 0 0 1.34 2.33h17.42a1.55 1.55 0 0 0 1.34-2.33L13.34 3.62a1.55 1.55 0 0 0-2.68 0Z"/><path d="M12 10v4"/><circle cx="12" cy="17.4" r=".7" fill="currentColor" stroke="none"/></svg>
+  <div>
+    <strong>Network name unavailable.</strong> INS keeps scanning, but macOS needs
+    Location Services to read your WiFi name. Open
+    <em>System Settings → Privacy &amp; Security → Location Services</em> and allow
+    <em>Inglorious Network Scanner</em> (or <em>Python</em> if running from source).
   </div>
 </div>
 
 <main>
-  <!-- ── OVERVIEW VIEW (Health Score hero) ───────────────────────────────── -->
+  <!-- ── OVERVIEW ─────────────────────────────────────────────────────────── -->
   <section class="tab" id="tab-overview">
-    <div class="health-hero">
-      <div class="health-score-wrap">
-        <div class="health-ring" id="health-ring">
-          <svg viewBox="0 0 120 120" class="health-ring-svg">
-            <circle cx="60" cy="60" r="52" class="health-ring-bg"></circle>
-            <circle cx="60" cy="60" r="52" class="health-ring-fg" id="health-ring-fg"
-              stroke-dasharray="326.7" stroke-dashoffset="326.7"></circle>
-          </svg>
-          <div class="health-num" id="health-num">—</div>
-          <div class="health-out-of">/ 100</div>
-        </div>
-        <div class="health-body">
-          <div class="health-band" id="health-band">Network Health</div>
-          <div class="health-headline" id="health-headline">Waiting for first scan…</div>
-          <ul class="health-reasons" id="health-reasons"></ul>
-        </div>
+    <div class="statement" id="statement">
+      <p class="statement-eyebrow" id="statement-eyebrow">Network status</p>
+      <h1 class="statement-line" id="statement-line">Waiting for the first scan…</h1>
+      <p class="statement-sub" id="statement-sub">INS is looking at your network now. This takes a few seconds.</p>
+      <div class="statement-meta" id="statement-meta" hidden>
+        <span class="score-chip mono" id="score-chip" title="Network health score out of 100">—<span class="score-denom">/100</span></span>
+        <ul class="statement-reasons" id="statement-reasons"></ul>
       </div>
     </div>
 
-    <div class="pbar"><h2>What's on the network right now</h2></div>
-    <div class="overview-grid" id="overview-summary"></div>
+    <section class="ov-section" id="attention-section" aria-labelledby="attention-heading">
+      <h2 class="section-heading" id="attention-heading">Needs your attention</h2>
+      <div class="attention-list" id="attention-list"></div>
+    </section>
 
-    <div class="pbar"><h2>Latest alerts</h2></div>
-    <div class="alerts-list mini" id="overview-alerts">
-      <div class="empty">No alerts yet.</div>
-    </div>
+    <section class="ov-section" aria-labelledby="glance-heading">
+      <h2 class="section-heading" id="glance-heading">On the network</h2>
+      <div class="glance-strip" id="overview-summary"></div>
+    </section>
   </section>
 
-  <!-- ── DEVICES VIEW ─────────────────────────────────────────────────────── -->
+  <!-- ── DEVICES ──────────────────────────────────────────────────────────── -->
   <section class="tab" id="tab-devices" hidden>
-    <div class="pbar">
-      <div class="filters">
-        <input type="search" id="dev-search" aria-label="Search devices by IP, MAC, hostname, or vendor" placeholder="Search IP, MAC, hostname, vendor…">
-        <select id="dev-type-filter" aria-label="Filter by device type">
-          <option value="">All types</option>
-        </select>
-        <select id="dev-known-filter" aria-label="Filter by known status">
-          <option value="all">All devices</option>
-          <option value="known">Known only</option>
-          <option value="unknown">Unknown only</option>
-          <option value="unidentified">Unidentified only</option>
-        </select>
+    <div class="triage-strip" id="triage-strip" hidden>
+      <div class="triage-strip-head">
+        <h2 class="section-heading" id="triage-heading">New devices to name</h2>
+        <button id="triage-bulk-known" class="btn btn-ghost">Mark all as known</button>
       </div>
-      <div class="view-toggle" role="tablist" aria-label="Devices view">
-        <button class="vtbtn active" data-view="grid" title="Card grid" aria-label="Card grid view">
-          <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
-            <rect x="1" y="1" width="5" height="5" rx="1"/>
-            <rect x="8" y="1" width="5" height="5" rx="1"/>
-            <rect x="1" y="8" width="5" height="5" rx="1"/>
-            <rect x="8" y="8" width="5" height="5" rx="1"/>
-          </svg>
-        </button>
-        <button class="vtbtn" data-view="list" title="Compact list" aria-label="Compact list view">
-          <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
-            <rect x="1" y="2"  width="12" height="2" rx="0.5"/>
-            <rect x="1" y="6"  width="12" height="2" rx="0.5"/>
-            <rect x="1" y="10" width="12" height="2" rx="0.5"/>
-          </svg>
-        </button>
-      </div>
-      <div class="legend">
-        <span class="dot dot-blue"></span> You
-        <span class="dot dot-green"></span> Known
-        <span class="dot dot-red"></span> Unknown
-        <span class="dot dot-gray"></span> Identifying…
+      <div class="triage-list" id="triage-list"></div>
+    </div>
+
+    <div class="toolbar">
+      <input type="search" id="dev-search" aria-label="Search devices by name, IP, MAC, hostname, or vendor" placeholder="Search devices…">
+      <select id="dev-type-filter" aria-label="Filter by device type">
+        <option value="">All types</option>
+      </select>
+      <select id="dev-known-filter" aria-label="Filter by known status">
+        <option value="all">Everything</option>
+        <option value="known">Known</option>
+        <option value="unknown">Unknown</option>
+        <option value="unidentified">Still identifying</option>
+      </select>
+      <div class="legend" aria-hidden="true">
+        <span class="legend-item"><span class="dot dot-me"></span>This Mac</span>
+        <span class="legend-item"><span class="dot dot-known"></span>Known</span>
+        <span class="legend-item"><span class="dot dot-unknown"></span>Unknown</span>
+        <span class="legend-item"><span class="dot dot-identifying"></span>Identifying</span>
       </div>
     </div>
-    <div class="device-grid" id="device-grid"></div>
-    <div class="device-list" id="device-list" hidden>
-      <div class="dl-head">
-        <div class="dl-c dl-c-status"></div>
-        <div class="dl-c dl-c-icon"></div>
-        <button type="button" class="dl-c dl-c-name dl-sort" data-sort="name">Name</button>
+
+    <div class="device-list" id="device-list">
+      <div class="dl-head" role="row">
+        <span class="dl-c dl-c-status" aria-hidden="true"></span>
+        <span class="dl-c dl-c-icon" aria-hidden="true"></span>
+        <button type="button" class="dl-c dl-c-name dl-sort" data-sort="name">Device</button>
         <button type="button" class="dl-c dl-c-ip dl-sort" data-sort="ip">IP</button>
         <button type="button" class="dl-c dl-c-mac dl-sort" data-sort="mac">MAC</button>
-        <button type="button" class="dl-c dl-c-vendor dl-sort" data-sort="vendor">Vendor</button>
-        <button type="button" class="dl-c dl-c-type dl-sort" data-sort="type">Type</button>
-        <button type="button" class="dl-c dl-c-bw dl-sort" data-sort="bw" title="Bandwidth, last sample window (needs sniffer enabled — see Settings)">Traffic</button>
+        <button type="button" class="dl-c dl-c-bw dl-sort" data-sort="bw" title="Traffic in the last minute (needs the passive sniffer, see Settings)">Traffic</button>
         <button type="button" class="dl-c dl-c-ports dl-sort" data-sort="ports">Ports</button>
-        <div class="dl-c dl-c-actions"></div>
+        <span class="dl-c dl-c-actions" aria-hidden="true"></span>
       </div>
       <div class="dl-body" id="device-list-body"></div>
     </div>
   </section>
 
-  <!-- ── TRIAGE VIEW ──────────────────────────────────────────────────────── -->
-  <section class="tab" id="tab-triage" hidden>
-    <div class="pbar">
-      <h2>Triage — name or block unknown devices</h2>
-      <div class="filters-right">
-        <button id="triage-bulk-known" class="btn btn-primary">Mark all as Known</button>
-      </div>
-    </div>
-    <p class="help" style="padding:0 22px">
-      Quick pass through every unknown device on your network. Give each one a friendly
-      name so future joins of the same device don't worry you. If you don't recognize
-      a device, change your WiFi password and remove it from the router.
-    </p>
-    <div class="triage-list" id="triage-list">
-      <div class="empty">Nothing to triage — every device is marked as known.</div>
-    </div>
-  </section>
-
-  <!-- ── ALERTS VIEW ──────────────────────────────────────────────────────── -->
-  <section class="tab" id="tab-alerts" hidden>
-    <div class="pbar">
-      <h2>Security Alerts</h2>
-      <div>
+  <!-- ── ACTIVITY ─────────────────────────────────────────────────────────── -->
+  <section class="tab" id="tab-activity" hidden>
+    <section class="act-section" aria-labelledby="alerts-heading">
+      <div class="section-bar">
+        <h2 class="section-heading" id="alerts-heading">Security alerts</h2>
         <button id="ack-all" class="btn btn-ghost">Mark all as read</button>
       </div>
-    </div>
-    <div class="alerts-list" id="alerts-list">
-      <div class="empty">No alerts yet. New devices and risky ports will show up here.</div>
-    </div>
-  </section>
+      <div class="alerts-list" id="alerts-list"></div>
+    </section>
 
-  <!-- ── HISTORY VIEW ─────────────────────────────────────────────────────── -->
-  <section class="tab" id="tab-history" hidden>
-    <div class="pbar">
-      <h2>Network Population</h2>
-    </div>
-    <div class="chart-wrap">
-      <canvas id="history-chart" width="800" height="240"></canvas>
-    </div>
-    <div class="pbar">
-      <h2>Known Devices</h2>
-    </div>
-    <div class="known-list" id="known-list"></div>
-  </section>
-
-  <!-- ── WI-FI VIEW ───────────────────────────────────────────────────────── -->
-  <section class="tab" id="tab-wifi" hidden>
-    <div class="pbar">
-      <h2>Nearby Wi-Fi networks</h2>
-      <div class="filters-right">
-        <button id="wifi-scan" class="btn btn-primary">Scan now</button>
-        <span class="settings-status" id="wifi-status"></span>
+    <section class="act-section" aria-labelledby="history-heading">
+      <h2 class="section-heading" id="history-heading">Devices over time</h2>
+      <div class="chart-wrap">
+        <canvas id="history-chart" width="900" height="220" aria-label="Chart of device count over time"></canvas>
       </div>
-    </div>
-    <p class="help" style="padding:0 22px">
-      Active scan via CoreWLAN. Useful for spotting crowded channels, finding
-      a quieter band to settle on, or detecting another AP broadcasting your
-      SSID. The scan takes a few seconds and briefly competes with your live
-      Wi-Fi connection.
-    </p>
-    <div class="wifi-channels" id="wifi-channels"></div>
-    <div class="wifi-list" id="wifi-list">
-      <div class="empty">Click <strong>Scan now</strong> to see nearby networks.</div>
-    </div>
+    </section>
+
+    <section class="act-section" aria-labelledby="wifi-heading">
+      <div class="section-bar">
+        <h2 class="section-heading" id="wifi-heading">Nearby Wi-Fi networks</h2>
+        <div class="section-bar-right">
+          <span class="settings-status" id="wifi-status"></span>
+          <button id="wifi-scan" class="btn">Scan now</button>
+        </div>
+      </div>
+      <p class="help">
+        Active scan via CoreWLAN: spot crowded channels, find a quieter band, or
+        catch another access point broadcasting your network name. Takes a few
+        seconds and briefly competes with your connection.
+      </p>
+      <div class="wifi-channels" id="wifi-channels"></div>
+      <div class="wifi-list" id="wifi-list">
+        <div class="empty">Run a scan to see the networks around you.</div>
+      </div>
+    </section>
   </section>
 
-  <!-- ── SETTINGS VIEW ────────────────────────────────────────────────────── -->
+  <!-- ── SETTINGS ─────────────────────────────────────────────────────────── -->
   <section class="tab" id="tab-settings" hidden>
-    <div class="pbar"><h2>Notifications &amp; Webhooks</h2></div>
-    <div class="section">
+
+    <section class="set-section" aria-labelledby="set-remote">
+      <h2 class="section-heading" id="set-remote">Remote access <span class="heading-tag">iOS companion</span></h2>
       <p class="help">
-        Send security alerts to Discord, Slack, Pushover, ntfy, or any HTTP endpoint.
-        URLs are auto-detected and formatted to match the receiver — pick a flavor
-        from the dropdown or just paste the webhook URL.
+        Let the INS iOS app view this dashboard over your WiFi. <strong>Off by
+        default.</strong> When on, INS listens on your LAN and every request needs
+        the token below; access is read-only, so a phone can never change anything.
+      </p>
+      <label class="setting-row">
+        <input type="checkbox" id="setting-remote">
+        <span>
+          <strong>Enable remote access</strong>
+          <span class="setting-hint">Serves the dashboard on your LAN IP, token-gated and read-only. The iOS app finds this Mac automatically via Bonjour.</span>
+        </span>
+      </label>
+      <div id="remote-details" hidden>
+        <div class="setting-row">
+          <label>Address</label>
+          <code id="remote-url" class="remote-code">—</code>
+        </div>
+        <div class="setting-row">
+          <label>Token</label>
+          <code id="remote-token" class="remote-code remote-token">—</code>
+          <button class="btn" id="remote-copy">Copy</button>
+          <button class="btn btn-danger" id="remote-regen">Regenerate</button>
+        </div>
+        <p class="help-fine">
+          Regenerating immediately disconnects any device using the old token.
+        </p>
+      </div>
+      <div class="setting-row"><span class="settings-status" id="remote-status"></span></div>
+    </section>
+
+    <section class="set-section" aria-labelledby="set-webhooks">
+      <h2 class="section-heading" id="set-webhooks">Notifications &amp; webhooks</h2>
+      <p class="help">
+        Send alerts to Discord, Slack, Pushover, ntfy, or any HTTP endpoint. Paste
+        the webhook URL; the receiver is detected and formatted automatically.
       </p>
       <div class="webhook-form">
         <input type="text" id="wh-label" aria-label="Webhook label" placeholder="Label (e.g. 'Home Discord')">
-        <input type="url" id="wh-url" aria-label="Webhook URL" placeholder="https://discord.com/api/webhooks/...">
+        <input type="url" id="wh-url" aria-label="Webhook URL" placeholder="https://discord.com/api/webhooks/…">
         <select id="wh-severity" aria-label="Webhook minimum severity">
           <option value="info">All alerts</option>
-          <option value="warning">Warnings &amp; criticals only</option>
+          <option value="warning">Warnings &amp; critical</option>
           <option value="critical">Critical only</option>
         </select>
-        <button id="wh-add" class="btn">Add webhook</button>
+        <button id="wh-add" class="btn">Add</button>
       </div>
       <div class="webhook-list" id="webhook-list"></div>
-    </div>
+    </section>
 
-    <div class="pbar"><h2>Advanced: Join Hook</h2></div>
-    <div class="section">
+    <section class="set-section" aria-labelledby="set-voice">
+      <h2 class="section-heading" id="set-voice">Voice &amp; Apple Shortcuts</h2>
       <p class="help">
-        Shell command run when a new device joins. Receives <code>$DEVICE_IP</code>,
-        <code>$DEVICE_MAC</code>, <code>$DEVICE_VENDOR</code>, <code>$DEVICE_HOSTNAME</code>,
-        <code>$DEVICE_TYPE</code>, <code>$SSID</code> as environment variables.
-        Leave empty to disable.
-      </p>
-      <textarea id="hook-script" placeholder="say &quot;new device joined: $DEVICE_HOSTNAME&quot;"></textarea>
-      <button id="hook-save" class="btn">Save hook</button>
-    </div>
-
-    <div class="pbar"><h2>Sniffer status</h2></div>
-    <div class="section">
-      <p class="help">
-        The passive sniffer powers per-device bandwidth, DNS history, and
-        auto-naming from DHCP broadcasts. It needs one-time BPF access:
-        run <code>tools/enable_sniffer.sh</code> once with <code>sudo</code>, then
-        restart INS.
-      </p>
-      <div class="setting-row">
-        <span id="sniffer-status" class="settings-status">—</span>
-      </div>
-    </div>
-
-    <div class="pbar"><h2>Behavior</h2></div>
-    <div class="section">
-      <label class="setting-row">
-        <input type="checkbox" id="setting-keep-alive">
-        <span>
-          <strong>Keep INS in the menubar</strong> — auto-restart if I Quit
-          <span class="setting-hint">Without this, clicking Quit removes the 📡 icon until next login. With this on, launchd relaunches INS immediately.</span>
-        </span>
-      </label>
-      <div class="setting-row">
-        <button id="keep-alive-save" class="btn btn-primary">Apply</button>
-        <span class="settings-status" id="keep-alive-status"></span>
-      </div>
-    </div>
-
-    <div class="pbar"><h2>Voice &amp; Apple Shortcuts</h2></div>
-    <div class="section">
-      <p class="help">
-        Speak warning/critical alerts out loud, or trigger an Apple Shortcut on
-        every alert or new device. First Shortcuts invocation prompts macOS for
-        Automation permission — allow it once for INS.
+        Speak serious alerts aloud, or run an Apple Shortcut on every alert or new
+        device. The first Shortcuts run prompts macOS for Automation permission.
       </p>
       <label class="setting-row">
         <input type="checkbox" id="setting-voice">
-        <span>Speak warning &amp; critical alerts aloud (<code>say</code>)</span>
+        <span>Speak warning &amp; critical alerts aloud</span>
       </label>
       <div class="setting-row">
-        <label for="setting-shortcut-alert">Shortcut on every alert:</label>
+        <label for="setting-shortcut-alert">Shortcut on every alert</label>
         <input type="text" id="setting-shortcut-alert" placeholder="Shortcut name">
       </div>
       <div class="setting-row">
-        <label for="setting-shortcut-new">Shortcut on new device:</label>
+        <label for="setting-shortcut-new">Shortcut on new device</label>
         <input type="text" id="setting-shortcut-new" placeholder="Shortcut name">
       </div>
       <div class="setting-row">
         <button id="settings-save" class="btn btn-primary">Save</button>
         <span class="settings-status" id="settings-status"></span>
       </div>
-    </div>
+    </section>
 
-    <div class="pbar"><h2>Router quarantine (experimental)</h2></div>
-    <div class="section">
+    <section class="set-section" aria-labelledby="set-behavior">
+      <h2 class="section-heading" id="set-behavior">Behavior</h2>
+      <label class="setting-row">
+        <input type="checkbox" id="setting-keep-alive">
+        <span>
+          <strong>Keep INS in the menubar</strong>
+          <span class="setting-hint">Auto-restart if you Quit. Without this, quitting removes the menubar icon until next login.</span>
+        </span>
+      </label>
+      <div class="setting-row">
+        <button id="keep-alive-save" class="btn btn-primary">Apply</button>
+        <span class="settings-status" id="keep-alive-status"></span>
+      </div>
+    </section>
+
+    <section class="set-section" aria-labelledby="set-router">
+      <h2 class="section-heading" id="set-router">Router quarantine <span class="heading-tag">experimental</span></h2>
       <p class="help">
-        Connect INS to your home router so the <strong>Block on router</strong>
-        button in the device story drawer actually kicks the device off the WiFi.
-        Currently supports Unifi (UDM-Pro / Dream Machine / Cloud Key) via REST
-        and OpenWrt via SSH. Eero is on the roadmap.
-        <br><br>
-        <strong>Experimental:</strong> author can't test against your specific
-        hardware. Use the Test Connection button before relying on this.
+        Connect INS to your router so <strong>Block on router</strong> in a
+        device's detail view actually kicks it off the WiFi. Supports Unifi
+        (REST) and OpenWrt (SSH). Use Test connection before relying on it.
       </p>
       <div class="setting-row">
-        <label for="router-kind">Router type:</label>
+        <label for="router-kind">Router type</label>
         <select id="router-kind">
           <option value="none">None / disabled</option>
           <option value="unifi">Unifi (REST)</option>
@@ -340,101 +270,83 @@
         </select>
       </div>
       <div class="setting-row">
-        <label for="router-host">Host / URL:</label>
-        <input type="text" id="router-host" placeholder="https://10.0.0.1:8443 (unifi) or 10.0.0.1 (openwrt)">
+        <label for="router-host">Host / URL</label>
+        <input type="text" id="router-host" placeholder="https://10.0.0.1:8443 (Unifi) or 10.0.0.1 (OpenWrt)">
       </div>
       <div class="setting-row">
-        <label for="router-user">Username:</label>
+        <label for="router-user">Username</label>
         <input type="text" id="router-user" placeholder="admin">
       </div>
       <div class="setting-row">
-        <label for="router-pass">Password:</label>
-        <input type="password" id="router-pass" placeholder="(empty leaves existing unchanged)">
+        <label for="router-pass">Password</label>
+        <input type="password" id="router-pass" placeholder="(empty keeps the existing one)">
       </div>
       <div class="setting-row" data-router-unifi>
-        <label for="router-site">Unifi site:</label>
+        <label for="router-site">Unifi site</label>
         <input type="text" id="router-site" placeholder="default">
       </div>
       <label class="setting-row" data-router-unifi>
         <input type="checkbox" id="router-verify-tls">
         <span>
           Verify the controller's TLS certificate
-          <span class="setting-hint">Leave off for a stock Unifi self-signed certificate. Turn on only if your controller uses a certificate your Mac already trusts — it closes a LAN man-in-the-middle window on your router password.</span>
+          <span class="setting-hint">Leave off for a stock self-signed certificate; turn on only if your controller's certificate is already trusted by this Mac.</span>
         </span>
       </label>
       <div class="setting-row" data-router-openwrt hidden>
-        <label for="router-ssh-port">SSH port:</label>
+        <label for="router-ssh-port">SSH port</label>
         <input type="text" id="router-ssh-port" placeholder="22">
       </div>
       <div class="setting-row" data-router-openwrt hidden>
-        <label for="router-iface">Wireless iface idx:</label>
+        <label for="router-iface">Wireless iface index</label>
         <input type="text" id="router-iface" placeholder="0">
       </div>
       <div class="setting-row">
-        <button id="router-save" class="btn btn-primary">Save router config</button>
+        <button id="router-save" class="btn btn-primary">Save</button>
         <button id="router-test" class="btn">Test connection</button>
         <span class="settings-status" id="router-status"></span>
       </div>
-    </div>
+    </section>
 
-    <div class="pbar"><h2>Remote access (iOS companion)</h2></div>
-    <div class="section">
+    <section class="set-section" aria-labelledby="set-hook">
+      <h2 class="section-heading" id="set-hook">Join hook <span class="heading-tag">advanced</span></h2>
       <p class="help">
-        Let the Inglorious Network Scanner iOS app view this Mac's dashboard over
-        your WiFi. <strong>Off by default.</strong> When on, INS listens on your
-        LAN (not just this Mac) and every request must carry the token below —
-        access is <strong>read-only</strong>, so the phone can never change
-        anything. Turn it off to go back to this-Mac-only.
+        Shell command run when a new device joins. Receives <code>$DEVICE_IP</code>,
+        <code>$DEVICE_MAC</code>, <code>$DEVICE_VENDOR</code>, <code>$DEVICE_HOSTNAME</code>,
+        <code>$DEVICE_TYPE</code>, <code>$SSID</code> as environment variables. Empty disables it.
       </p>
-      <label class="setting-row">
-        <input type="checkbox" id="setting-remote">
-        <span>
-          <strong>Enable remote access</strong> — reachable from other devices on this WiFi
-          <span class="setting-hint">Serves the dashboard on your LAN IP, token-gated and read-only. The iOS app also discovers this Mac automatically via Bonjour.</span>
-        </span>
-      </label>
-      <div id="remote-details" hidden>
-        <div class="setting-row">
-          <label>Address:</label>
-          <code id="remote-url" class="remote-code">—</code>
-        </div>
-        <div class="setting-row">
-          <label>Token:</label>
-          <code id="remote-token" class="remote-code remote-token">—</code>
-          <button class="btn btn-tiny" id="remote-copy">Copy</button>
-          <button class="btn btn-tiny btn-danger" id="remote-regen">Regenerate</button>
-        </div>
-        <p class="help-fine">
-          In the iOS app, enter the address and paste this token (or let it find
-          this Mac via Bonjour). Regenerating immediately disconnects any device
-          using the old token.
-        </p>
-      </div>
+      <textarea id="hook-script" placeholder="say &quot;new device joined: $DEVICE_HOSTNAME&quot;"></textarea>
       <div class="setting-row">
-        <span class="settings-status" id="remote-status"></span>
+        <button id="hook-save" class="btn">Save hook</button>
       </div>
-    </div>
+    </section>
 
-    <div class="pbar"><h2>Privacy</h2></div>
-    <div class="section privacy-block">
+    <section class="set-section" aria-labelledby="set-sniffer">
+      <h2 class="section-heading" id="set-sniffer">Passive sniffer</h2>
+      <p class="help">
+        Powers per-device bandwidth, DNS history, and auto-naming from DHCP.
+        Needs one-time BPF access: run <code>tools/enable_sniffer.sh</code> with
+        <code>sudo</code>, then restart INS.
+      </p>
+      <div class="setting-row">
+        <span id="sniffer-status" class="settings-status">—</span>
+      </div>
+    </section>
+
+    <section class="set-section privacy-block" aria-labelledby="set-privacy">
+      <h2 class="section-heading" id="set-privacy">Privacy</h2>
       <p>
         <strong>Everything stays on your Mac.</strong> No cloud, no accounts, no
-        telemetry. INS only talks to the public internet to check GitHub for new
-        releases and to look up MAC vendor names from a local database.
-      </p>
-      <p>
-        Webhooks you configure here send to whichever URL <em>you</em> provide.
-        Disable any of them above to stop their traffic immediately.
+        telemetry. INS only reaches the internet to check GitHub for updates, plus
+        any webhooks you configure above.
       </p>
       <p class="help-fine">
-        Read the full statement and threat model in <code>SECURITY.md</code> in
-        the source tree.
+        Full statement and threat model: <code>SECURITY.md</code> in the source tree.
       </p>
-    </div>
+    </section>
   </section>
 </main>
 
-<!-- Slide-over for per-device "story" view. -->
+<!-- Device detail drawer -->
 <aside class="drawer drawer-wide" id="device-drawer" role="dialog" aria-modal="true" aria-labelledby="device-drawer-title" hidden>
   <div class="drawer-head">
     <div class="drawer-title" id="device-drawer-title">Device</div>
@@ -443,7 +355,17 @@
   <div class="drawer-body" id="device-drawer-body"></div>
 </aside>
 
-<!-- First-launch onboarding overlay -->
+<!-- Alert explainer drawer -->
+<aside class="drawer" id="alert-drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" hidden>
+  <div class="drawer-head">
+    <div class="drawer-title" id="drawer-title">Alert</div>
+    <button class="btn btn-ghost" id="drawer-close">Close</button>
+  </div>
+  <div class="drawer-body" id="drawer-body"></div>
+</aside>
+<div class="drawer-scrim" id="drawer-scrim" hidden></div>
+
+<!-- First-launch onboarding -->
 <div class="onboarding" id="onboarding" role="dialog" aria-modal="true" aria-label="Welcome tour" hidden>
   <div class="onboarding-card">
     <div class="onboarding-step" id="onboarding-step"></div>
@@ -455,26 +377,16 @@
   </div>
 </div>
 
-<!-- Slide-over for "what does this mean" alert help. -->
-<aside class="drawer" id="alert-drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" hidden>
-  <div class="drawer-head">
-    <div class="drawer-title" id="drawer-title">Alert</div>
-    <button class="btn btn-ghost" id="drawer-close">Close</button>
-  </div>
-  <div class="drawer-body" id="drawer-body"></div>
-</aside>
-<div class="drawer-scrim" id="drawer-scrim" hidden></div>
-
 <footer class="page-footer">
   <span>Inglorious Network Scanner</span>
   <span class="dot-sep">·</span>
-  <span>v<span id="hdr-version">2.0</span></span>
+  <span class="mono">v<span id="hdr-version">2.6</span></span>
   <span class="dot-sep">·</span>
-  <span>Local-only, no telemetry, no cloud.</span>
+  <span>Local-only. No telemetry, no cloud.</span>
   <span class="dot-sep">·</span>
   <a href="https://github.com/mrsausagerolls/netscan" target="_blank" rel="noopener">Source</a>
   <span class="dot-sep">·</span>
-  <span>by Inglorious Labs</span>
+  <span>Inglorious Labs</span>
 </footer>
 
 <script src="/static/app.js"></script>

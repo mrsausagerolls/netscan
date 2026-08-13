@@ -2005,3 +2005,23 @@ def test_bonjour_encode_txt_no_op_without_foundation():
 def test_bonjour_publish_no_op_without_name():
     import bonjour
     assert bonjour.publish("", port=8765) is False    # empty name never publishes
+
+
+# ── dashboard: /api/device/<mac> URL-decoding ────────────────────────────────
+
+def test_device_story_decodes_percent_encoded_mac(tmp_path):
+    """The SPA encodeURIComponent()s the MAC (colons become %3A); the handler
+    must decode before lookup or every device drawer request 404s."""
+    import dashboard, store
+    s = store.DeviceStore(data_dir=tmp_path)
+    s.touch({"mac": "AA:BB:CC:DD:EE:FF", "ip": "10.0.0.9",
+             "hostname": "cam", "vendor": "TestVendor"})
+
+    h = dashboard._Handler.__new__(dashboard._Handler)
+    h.store = s
+    sent = []
+    h._send = lambda code, ctype, body: sent.append((code, body))
+    h._send_device_story("AA%3ABB%3ACC%3ADD%3AEE%3AFF")
+    code, body = sent[-1]
+    assert code == 200
+    assert b"TestVendor" in body

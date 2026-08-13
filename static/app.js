@@ -1,93 +1,158 @@
 // Inglorious Network Scanner — dashboard front-end.
-// Plain vanilla JS, no framework.
+// Plain vanilla JS, no framework. Calm-guardian redesign: 4 tabs
+// (Overview / Devices / Activity / Settings), typographic status statement,
+// stroke iconography, severity color on a strict budget.
 
 const $  = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
 const RISKY_PORTS = new Set([23, 21, 513, 514, 111, 2049, 3389, 5900, 6667, 1080]);
 
-// "What does this mean / what should I do?" copy keyed by alert.kind prefix.
-// Order matters — first matching prefix wins.
+// ── iconography ───────────────────────────────────────────────────────────
+// One drawn stroke set for severity + device types. 24px grid, 1.6 stroke,
+// round caps — a single visual voice across the whole surface (no emoji).
+const _svg = (inner, w = 18) =>
+  `<svg viewBox="0 0 24 24" width="${w}" height="${w}" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
+
+const SEV_ICON = {
+  critical: _svg('<circle cx="12" cy="12" r="9.25"/><path d="M12 8v5"/><circle cx="12" cy="16.4" r=".7" fill="currentColor" stroke="none"/>'),
+  warning:  _svg('<path d="M10.66 3.62 1.95 18.5a1.55 1.55 0 0 0 1.34 2.33h17.42a1.55 1.55 0 0 0 1.34-2.33L13.34 3.62a1.55 1.55 0 0 0-2.68 0Z"/><path d="M12 10v4"/><circle cx="12" cy="17.4" r=".7" fill="currentColor" stroke="none"/>'),
+  info:     _svg('<circle cx="12" cy="12" r="9.25"/><path d="M12 11.2v4.6"/><circle cx="12" cy="8.2" r=".75" fill="currentColor" stroke="none"/>'),
+  ok:       _svg('<circle cx="12" cy="12" r="9.25"/><path d="m8.2 12.4 2.6 2.6 5-5.4"/>'),
+};
+
+const DEVICE_ICONS = {
+  router:      _svg('<rect x="3" y="12.5" width="18" height="6.5" rx="2"/><path d="M7.5 12.5V8.5M16.5 12.5v-6"/><circle cx="7" cy="15.8" r=".75" fill="currentColor" stroke="none"/><circle cx="10.4" cy="15.8" r=".75" fill="currentColor" stroke="none"/>'),
+  access_point:_svg('<circle cx="12" cy="15.5" r="1.3" fill="currentColor" stroke="none"/><path d="M8.6 12.2a4.8 4.8 0 0 1 6.8 0M5.8 9.3a8.8 8.8 0 0 1 12.4 0"/><path d="M12 16.8V20"/>'),
+  printer:     _svg('<path d="M7 8.5V4.5h10v4"/><path d="M7 15H5.5A1.5 1.5 0 0 1 4 13.5v-3A1.5 1.5 0 0 1 5.5 9h13a1.5 1.5 0 0 1 1.5 1.5v3a1.5 1.5 0 0 1-1.5 1.5H17"/><rect x="7" y="13" width="10" height="6.5" rx="1"/><circle cx="17.4" cy="11.4" r=".75" fill="currentColor" stroke="none"/>'),
+  camera:      _svg('<circle cx="12" cy="10.6" r="5.6"/><circle cx="12" cy="10.6" r="1.9"/><path d="M8.8 15.4 7.2 20h9.6l-1.6-4.6"/>'),
+  tv:          _svg('<rect x="3" y="5.5" width="18" height="11.5" rx="1.6"/><path d="M8.5 20.5h7"/>'),
+  speaker:     _svg('<rect x="6.5" y="3.5" width="11" height="17" rx="2"/><circle cx="12" cy="14.6" r="3"/><circle cx="12" cy="7.8" r="1.1"/>'),
+  phone:       _svg('<rect x="7.5" y="3" width="9" height="18" rx="2.2"/><path d="M10.8 17.8h2.4"/>'),
+  tablet:      _svg('<rect x="5" y="3.5" width="14" height="17" rx="2.2"/><path d="M10.8 17.6h2.4"/>'),
+  laptop:      _svg('<rect x="4.5" y="5" width="15" height="10" rx="1.6"/><path d="M2.8 18.5h18.4"/>'),
+  desktop:     _svg('<rect x="3.5" y="4.5" width="17" height="11.5" rx="1.6"/><path d="M9.5 20.5h5M12 16v4.5"/>'),
+  computer:    _svg('<rect x="3.5" y="4.5" width="17" height="11.5" rx="1.6"/><path d="M9.5 20.5h5M12 16v4.5"/>'),
+  watch:       _svg('<rect x="7" y="6.5" width="10" height="11" rx="3"/><path d="M9.2 6.5 9.8 3h4.4l.6 3.5M9.2 17.5l.6 3.5h4.4l.6-3.5"/>'),
+  console:     _svg('<path d="M6.7 8h10.6c2.4 0 4.2 2 4.2 4.4 0 2.5-1.4 4.6-3 4.6-1.1 0-1.9-.6-2.7-1.5H8.2c-.8.9-1.6 1.5-2.7 1.5-1.6 0-3-2.1-3-4.6C2.5 10 4.3 8 6.7 8Z"/><path d="M8 10.9v3M6.5 12.4h3"/><circle cx="15.8" cy="11.4" r=".75" fill="currentColor" stroke="none"/><circle cx="17.8" cy="13.4" r=".75" fill="currentColor" stroke="none"/>'),
+  nas:         _svg('<rect x="4.5" y="4" width="15" height="16" rx="1.6"/><path d="M4.5 9.3h15M4.5 14.6h15"/><circle cx="7.5" cy="6.7" r=".7" fill="currentColor" stroke="none"/><circle cx="7.5" cy="12" r=".7" fill="currentColor" stroke="none"/><circle cx="7.5" cy="17.3" r=".7" fill="currentColor" stroke="none"/>'),
+  iot:         _svg('<path d="M9.2 17.6v-1.9C7.3 14.5 6 12.6 6 10.5 6 7.2 8.7 4.5 12 4.5s6 2.7 6 6c0 2.1-1.3 4-3.2 5.2v1.9"/><path d="M9.6 20.5h4.8"/>'),
+  voice_assistant:_svg('<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.8 11.5a6.2 6.2 0 0 0 12.4 0"/><path d="M12 17.7V21"/>'),
+  server:      _svg('<rect x="4" y="4" width="16" height="6.8" rx="1.5"/><rect x="4" y="13.2" width="16" height="6.8" rx="1.5"/><circle cx="7.3" cy="7.4" r=".75" fill="currentColor" stroke="none"/><circle cx="7.3" cy="16.6" r=".75" fill="currentColor" stroke="none"/>'),
+  unknown:     _svg('<circle cx="12" cy="12" r="8.6" stroke-dasharray="2.6 3.4"/><path d="M9.8 9.6a2.3 2.3 0 1 1 3.2 2.4c-.7.3-1 .8-1 1.5v.3"/><circle cx="12" cy="16.6" r=".75" fill="currentColor" stroke="none"/>'),
+};
+const devIcon = (type) => DEVICE_ICONS[type] || DEVICE_ICONS.unknown;
+
+// ── "what does this mean" explainers ──────────────────────────────────────
+// Keyed by alert.kind prefix; first matching prefix wins.
 const ALERT_HELP = [
   ["rogue_dhcp", {
     title: "More than one DHCP server",
-    why:   "Your router hands out IP addresses (DHCP). If two devices are doing that, your LAN is in an unstable state — at best you'll have intermittent disconnections; at worst, an attacker is intentionally redirecting traffic.",
-    do:    "Most often this is a second router plugged into the LAN by mistake. Walk to your network closet, find anything that isn't your primary router (a powerline adapter, a guest AP, an old AirPort), and either unplug it or switch its DHCP off in its admin page.",
+    why:   "Your router hands out IP addresses (DHCP). If two devices are doing that, your network is unstable at best; at worst, someone is intentionally redirecting your traffic.",
+    do:    "Most often this is a second router plugged in by mistake. Find anything that isn't your primary router (a powerline adapter, a guest AP, an old base station) and unplug it or switch its DHCP off.",
   }],
   ["arp_flap_", {
     title: "ARP / MAC instability",
-    why:   "ARP is how devices on the LAN find each other. The same IP address shouldn't be answered by different hardware addresses in a short window — that's the fingerprint of someone running an ARP-spoof attack to read your traffic.",
-    do:    "If you haven't restarted a router or moved a device recently, take it seriously: change your WiFi password, kick all devices off, and add them back one at a time so any unknown joiner stands out.",
+    why:   "ARP is how devices on your network find each other. The same IP shouldn't be answered by different hardware in a short window: that's the fingerprint of an ARP-spoofing attack.",
+    do:    "If you haven't restarted a router or moved a device recently, take it seriously: change your WiFi password, kick all devices off, and add them back one at a time.",
   }],
   ["vendor_changed", {
     title: "Hardware mismatch on a known MAC",
-    why:   "Every network card has a unique MAC and a manufacturer associated with it. If the manufacturer suddenly changes on a MAC you've seen before, it almost always means a device is pretending to be one of yours.",
-    do:    "Change your WiFi password right away. Then on the router, kick everything off and let your real devices reconnect — anything that doesn't reconnect was probably the impostor.",
+    why:   "Every network card has a manufacturer tied to its address. If the manufacturer suddenly changes on an address you've seen before, a device is almost certainly pretending to be one of yours.",
+    do:    "Change your WiFi password right away, kick everything off the router, and let your real devices reconnect. Whatever doesn't reconnect was probably the impostor.",
   }],
   ["wan_exposed_", {
     title: "Reachable from the public internet",
-    why:   "Your router is forwarding a port from the public internet to this device on your LAN. Anyone in the world can try to connect to it. Most home users never need this, and most who do don't realize they have it.",
-    do:    "Open your router's admin page (usually http://192.168.1.1 or http://192.168.0.1). Find the Port Forwarding or NAT / Virtual Server section. Remove the rule. While you're there, turn UPnP off — it lets devices on your LAN open WAN ports without asking you.",
+    why:   "Your router is forwarding a port from the internet to this device. Anyone in the world can try to connect to it. Most homes never need this.",
+    do:    "Open your router's admin page and remove the rule under Port Forwarding (sometimes 'NAT / Virtual Server'). While you're there, turn UPnP off so devices can't quietly open ports in the future.",
   }],
-  ["default_creds_risk", {
+  ["default_creds", {
     title: "Likely default password",
-    why:   "Some camera and DVR brands ship with the same admin password on every unit. If you've never changed it, anyone on the same network — or the public internet, if the device is exposed — can log in.",
-    do:    "Open the device's IP in a browser, log in with the documented default, and set a long unique password. If you can't remember whether you changed it, change it now anyway.",
+    why:   "Some camera and DVR brands ship the same admin password on every unit. If you've never changed it, anyone on your network (or the internet, if exposed) can log in.",
+    do:    "Open the device's IP in a browser, log in with the documented default, and set a long unique password. If you can't remember changing it, change it now.",
   }],
   ["risky_port_23", {
     title: "Telnet is exposed",
-    why:   "Telnet sends passwords in plain text. No modern device should have it on. If you see it open, the device is either very old or already compromised by malware that turned it on for remote control.",
-    do:    "If the device has an admin page, look for a 'disable Telnet' option. If it doesn't, treat it as malware: unplug it, factory-reset, update firmware, and reconnect only if essential.",
+    why:   "Telnet sends passwords in plain text. No modern device should have it on; a device with Telnet open is either very old or already compromised.",
+    do:    "If the device has an admin page, look for a 'disable Telnet' option. If not, treat it as compromised: unplug, factory-reset, update firmware.",
   }],
   ["risky_port_", {
     title: "Insecure protocol exposed",
-    why:   "Older remote-access protocols like FTP, RDP, VNC, and rsh have well-known weaknesses or send credentials in plain text. Leaving them open invites brute-force attacks and traffic sniffing.",
-    do:    "Disable the service if you don't actively need it. If you do, restrict it to specific source IPs in the device's firewall and put it behind a strong password.",
+    why:   "Older remote-access protocols (FTP, RDP, VNC, rsh) have well-known weaknesses or send credentials in plain text. Leaving them open invites break-in attempts.",
+    do:    "Disable the service if you don't actively use it. If you do, restrict it to specific source addresses and put it behind a strong password.",
   }],
   ["new_device", {
     title: "A new device joined your WiFi",
-    why:   "INS notices the first time it sees a hardware address. If it's yours, mark it Known and you won't be alerted again. If it isn't, your WiFi password may have leaked.",
-    do:    "Recognize it? Mark Known and give it a friendly name. Don't? Change your WiFi password, kick everything off the router, and re-join your real devices.",
+    why:   "INS notices the first time it sees a hardware address. If it's yours, name it once and you won't be asked again. If it isn't, your WiFi password may have leaked.",
+    do:    "Recognize it? Give it a name on the Devices tab. Don't? Change your WiFi password, kick everything off the router, and re-join your own devices.",
   }],
   ["randomized_mac_", {
-    title: "Same device, different MAC",
-    why:   "iPhones, recent iPads, and modern Android phones rotate their WiFi MAC for privacy. INS recognizes that a 'new' MAC actually belongs to one of your devices so you don't get an alert for the same phone every week.",
-    do:    "If you trust the grouping, no action is needed. If any of the listed MACs doesn't belong to this device, mark it as Unknown and investigate.",
+    title: "Same device, different address",
+    why:   "iPhones, iPads, and modern Android phones rotate their WiFi address for privacy. INS groups them so the same phone doesn't alarm you every week.",
+    do:    "If the grouping looks right, nothing to do. If a listed address doesn't belong to that device, investigate it.",
   }],
   ["camera_no_https", {
     title: "Camera admin page is unencrypted",
-    why:   "Logging into the camera's web admin over HTTP sends your password in clear text across the LAN. Anyone with access to your WiFi (or any compromised device on it) can capture it.",
-    do:    "Look in the camera's settings for an HTTPS option and turn it on. If it doesn't have one, treat the LAN password as already exposed and use it nowhere else.",
+    why:   "Logging into this camera sends your password in clear text across the network, where any compromised device can capture it.",
+    do:    "Look for an HTTPS option in the camera's settings. If there isn't one, treat that password as shared and use it nowhere else.",
   }],
   ["dns_threat", {
     title: "Device contacted a flagged domain",
-    why:   "The destination this device looked up is on a local list of known abuse, command-and-control, or phishing infrastructure. That's a strong signal of malware or a compromised app.",
-    do:    "If it's an IoT device, factory-reset it. If it's a computer or phone, run a malware scan. Investigate what's installed on it that you don't recognize.",
+    why:   "The destination is on a local list of known abuse or malware infrastructure: a strong signal of a compromised device or app.",
+    do:    "IoT device: factory-reset it. Computer or phone: run a malware scan and review what's installed.",
   }],
 ];
 
+// ── state ─────────────────────────────────────────────────────────────────
 let STATE   = null;
 let HISTORY = [];
-const TABS = ["overview", "devices", "triage", "alerts", "history", "wifi", "settings"];
-// Derive the initial tab from the hash, but fall back to overview for an
-// unknown hash (stale bookmark, renamed tab) — otherwise showTab hides every
-// section and activates no nav button, leaving a blank page under the header.
-let CURRENT_TAB = location.hash.replace("#", "");
-if (!TABS.includes(CURRENT_TAB)) CURRENT_TAB = "overview";
 
-// Element focused before an overlay opened, so focus can be returned on close.
+const TABS = ["overview", "devices", "activity", "settings"];
+// Pre-2.6 tabs map onto the consolidated IA (the menubar opens /#alerts).
+const LEGACY_TABS = {
+  triage: "devices", alerts: "activity", history: "activity", wifi: "activity",
+};
+function resolveTab(name) {
+  if (TABS.includes(name)) return name;
+  return LEGACY_TABS[name] || "overview";
+}
+let CURRENT_TAB = resolveTab(location.hash.replace("#", ""));
+
+// ── helpers ───────────────────────────────────────────────────────────────
+async function api(path, body) {
+  const opts = body
+    ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+    : {};
+  const r = await fetch(path, opts);
+  return r.json();
+}
+const escHtml = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
+
+function timeAgo(tsSeconds) {
+  if (!tsSeconds) return "just now";
+  const diff = Date.now() / 1000 - tsSeconds;
+  if (diff < 60)      return `${Math.round(diff)}s ago`;
+  if (diff < 3600)    return `${Math.round(diff / 60)}m ago`;
+  if (diff < 86400)   return `${Math.round(diff / 3600)}h ago`;
+  return `${Math.round(diff / 86400)}d ago`;
+}
+
+// Best human-readable name: Known label > probe fingerprint > hostname > vendor.
+function bestName(d) {
+  if (d.known_name)                        return d.known_name;
+  if (d.fingerprint)                       return d.fingerprint;
+  if (d.hostname && d.hostname !== "—")    return d.hostname.replace(/\.local\.?$/i, "");
+  if (d.vendor && d.vendor !== "—")        return d.vendor;
+  return "";
+}
+
+// ── modal focus management ────────────────────────────────────────────────
 let _lastFocus = null;
 function _restoreFocus() {
   if (_lastFocus && typeof _lastFocus.focus === "function") _lastFocus.focus();
   _lastFocus = null;
 }
-
-// ── modal focus management ────────────────────────────────────────────────
-// The device drawer, alert drawer and onboarding overlay all declare
-// role="dialog" aria-modal="true", but nothing enforced it: Tab walked straight
-// out of the dialog into the still-focusable nav and cards behind the scrim.
-// We make the background inert while any dialog is open and wrap Tab within the
-// topmost one.
 function _topmostDialog() {
   for (const id of ["#onboarding", "#device-drawer", "#alert-drawer"]) {
     const el = $(id);
@@ -95,7 +160,7 @@ function _topmostDialog() {
   }
   return null;
 }
-const _INERT_SELECTORS = ["header", ".hnav-bar", ".ssid-banner", "main", ".page-footer"];
+const _INERT_SELECTORS = [".app-header", ".app-nav", ".ssid-banner", "main", ".page-footer"];
 function _syncModalState() {
   const open = _topmostDialog() !== null;
   _INERT_SELECTORS.forEach(sel => $$(sel).forEach(el => {
@@ -126,71 +191,57 @@ function _trapTab(e) {
 
 // ── tab switching ─────────────────────────────────────────────────────────
 function showTab(name) {
-  if (!TABS.includes(name)) name = "overview";
+  name = resolveTab(name);
   CURRENT_TAB = name;
   history.replaceState(null, "", `#${name}`);
   $$(".navbtn").forEach(b => {
     const active = b.dataset.tab === name;
     b.classList.toggle("active", active);
-    // Expose the selected view to assistive tech (the buttons otherwise all
-    // read as identical unlabeled "button"s).
     if (active) b.setAttribute("aria-current", "page");
     else        b.removeAttribute("aria-current");
   });
   $$(".tab").forEach(t => t.hidden = t.id !== `tab-${name}`);
-  if (name === "history")  loadHistory();
+  if (name === "activity") loadHistory();
   if (name === "settings") loadRemoteAccess();
-  // Paint the now-visible tab's body immediately — refresh() only paints the
-  // active tab on each tick, so a freshly-shown tab needs a paint here.
   if (STATE) paintActiveTab();
 }
 $$(".navbtn").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
 
-// ── api helpers ───────────────────────────────────────────────────────────
-async function api(path, body) {
-  const opts = body
-    ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
-    : {};
-  const r = await fetch(path, opts);
-  return r.json();
-}
-const escHtml = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
-  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
-
 // ── refresh loop ──────────────────────────────────────────────────────────
-// Paint only the body of the currently-visible tab. Every painter does a full
-// innerHTML rebuild + listener re-attach, so painting all seven tabs on every
-// scan tick (and every coalesced SSE burst) was pure DOM thrash for hidden
-// content. showTab() paints a tab when it becomes visible; refresh() keeps the
-// visible one live.
 function paintActiveTab() {
   switch (CURRENT_TAB) {
-    case "overview": paintHealth(); paintOverview(); paintOverviewAlerts(); break;
-    case "devices":  paintDevices(); break;
-    case "triage":   paintTriage(); break;
-    case "alerts":   paintAlerts(); break;
-    case "history":  paintKnown(); loadHistory(); break;
-    case "settings": paintWebhooks(); paintHook(); break;
-    // "wifi" has no state-driven body (its list is populated by an explicit scan).
+    case "overview": paintStatement(); paintAttention(); paintGlance(); break;
+    case "devices":  paintTriage(); paintDevices(); break;
+    case "activity": paintAlerts(); drawHistory(); break;
+    case "settings": paintWebhooks(); paintHook(); paintSettings(); break;
   }
 }
 
 async function refresh() {
   try {
-    // Only /api/state on the hot path. The (up-to-5000-row) scan history is
-    // fetched lazily by loadHistory() when the History tab is actually shown,
-    // not on every scan tick.
     STATE = await fetch("/api/state").then(r => r.json());
-    paintHeader();          // header stats + nav badges — always
-    announceNewAlerts();    // screen-reader live region — always
-    paintActiveTab();       // only the visible tab's body
+    paintHeader();
+    announceNewAlerts();
+    paintActiveTab();
     updateLivePill();
   } catch (e) { /* network blip; try again next tick */ }
 }
 
-// Announce a rise in the unacknowledged-alert count to screen readers via the
-// aria-live region. Only speaks the delta on an increase so it isn't chatty on
-// every re-render.
+// Coalesce bursty SSE events into a single repaint.
+let _refreshTimer = null;
+function refreshSoon() {
+  if (_refreshTimer) return;
+  _refreshTimer = setTimeout(() => { _refreshTimer = null; refresh(); }, 300);
+}
+
+async function loadHistory() {
+  try {
+    HISTORY = await fetch("/api/history?limit=500").then(r => r.json());
+  } catch (e) { /* keep whatever we had */ }
+  drawHistory();
+}
+
+// Screen-reader announcement when the unack count rises.
 let _prevUnack = null;
 function announceNewAlerts() {
   const el = document.getElementById("a11y-announce");
@@ -205,123 +256,156 @@ function announceNewAlerts() {
   _prevUnack = n;
 }
 
-// Coalesce bursty SSE events (one scan can fire scan.completed + several
-// device.* events) into a single repaint so we don't run the full painter
-// chain N+1 times per scan.
-let _refreshTimer = null;
-function refreshSoon() {
-  if (_refreshTimer) return;
-  _refreshTimer = setTimeout(() => { _refreshTimer = null; refresh(); }, 300);
-}
-
-// Fetch a bounded recent window of scan history, then redraw the chart.
-async function loadHistory() {
-  try {
-    HISTORY = await fetch("/api/history?limit=500").then(r => r.json());
-  } catch (e) { /* keep whatever we had */ }
-  drawHistory();
-}
-
 // ── header ────────────────────────────────────────────────────────────────
 function paintHeader() {
   $("#hdr-ssid").textContent  = STATE.ssid || "—";
   $("#hdr-net").textContent   = STATE.network || "—";
   $("#hdr-public-ip").textContent = STATE.public_ip || "—";
-  $("#hdr-count").textContent = STATE.count || 0;
-  $("#hdr-alerts").textContent = STATE.unack_count || 0;
-  $("#hdr-scantime").textContent = `last scan ${STATE.last_scan}`;
+  $("#hdr-scantime").textContent = STATE.last_scan && STATE.last_scan !== "—"
+    ? `scanned ${STATE.last_scan}` : "—";
   $("#hdr-version").textContent = STATE.version || "";
 
   const aBadge = $("#nav-alert-badge");
   aBadge.textContent = STATE.unack_count ? STATE.unack_count : "";
-
   const tBadge = $("#nav-triage-badge");
   tBadge.textContent = (STATE.triage || []).length || "";
 
-  // Show the SSID-permission banner only when scanning works (network CIDR
-  // detected) but SSID detection failed — distinguishes "Location permission
-  // needed" from "not connected to any WiFi at all".
   const banner = $("#ssid-banner");
-  if (banner) {
-    banner.hidden = !(STATE.network && !STATE.ssid);
-  }
+  if (banner) banner.hidden = !(STATE.network && !STATE.ssid);
 }
 
-// ── health ────────────────────────────────────────────────────────────────
-function paintHealth() {
-  const h = STATE.health || {};
-  const score = (typeof h.score === "number") ? h.score : null;
+// ── overview: the statement ───────────────────────────────────────────────
+const BAND_COPY = {
+  excellent: { line: () => `All clear.`,
+               sub:  (n, ssid, busy) => busy
+                 ? `${n} device${n === 1 ? "" : "s"} on ${ssid || "your network"}. Nothing serious. A little housekeeping below.`
+                 : `${n} device${n === 1 ? "" : "s"} on ${ssid || "your network"}. Nothing needs you.` },
+  good:      { line: () => `Looking good.`,
+               sub:  (n, ssid) => `${n} device${n === 1 ? "" : "s"} on ${ssid || "your network"}. A couple of small things worth a glance below.` },
+  fair:      { line: () => `Worth a look.`,
+               sub:  () => `A few things on your network deserve attention. None of them are urgent, but don't leave them forever.` },
+  poor:      { line: () => `Action needed.`,
+               sub:  () => `Something on your network is wrong. Start with the biggest item below.` },
+  at_risk:   { line: () => `Your network is at risk.`,
+               sub:  () => `Please address the items below now, starting from the top.` },
+};
 
-  $("#health-num").textContent = (score == null) ? "—" : String(score);
+function paintStatement() {
+  const el = $("#statement");
+  const h = STATE.health;
+  const scanning = !STATE.last_scan_epoch;
+  const line = $("#statement-line"), sub = $("#statement-sub");
+  const meta = $("#statement-meta");
+  el.classList.remove("sev-warn", "sev-crit");
 
-  // Ring stroke: 326.7 = 2 * π * 52 (r=52). Map 0..100 to 0..326.7 filled.
-  const fg = $("#health-ring-fg");
-  if (fg) {
-    const off = 326.7 * (1 - (score || 0) / 100);
-    fg.setAttribute("stroke-dashoffset", String(off));
+  if (scanning || !h || typeof h.score !== "number") {
+    line.textContent = "Waiting for the first scan…";
+    sub.textContent  = "INS is looking at your network now. This takes a few seconds.";
+    meta.hidden = true;
+    return;
   }
+  const band = h.band || "good";
+  const copy = BAND_COPY[band] || BAND_COPY.good;
+  const n = STATE.count || 0;
+  const busy = (STATE.triage || []).length > 0 ||
+               (STATE.alerts || []).some(a => !a.acknowledged);
+  line.textContent = copy.line(n, STATE.ssid);
+  sub.textContent  = copy.sub(n, STATE.ssid, busy);
+  if (band === "fair") el.classList.add("sev-warn");
+  if (band === "poor" || band === "at_risk") el.classList.add("sev-crit");
 
-  const band = h.band || "—";
-  const headline = h.headline || "Waiting for first scan…";
-
-  const bandLabels = {
-    excellent: "Excellent",
-    good:      "Good",
-    fair:      "Fair",
-    poor:      "Poor",
-    at_risk:   "At risk",
-  };
-  $("#health-band").textContent = bandLabels[band] || "Network Health";
-  $("#health-band").className = `health-band band-${band}`;
-  $("#health-headline").textContent = headline;
-  $("#health-ring").className = `health-ring band-${band}`;
-
-  const reasonsEl = $("#health-reasons");
-  const reasons = h.reasons || [];
-  if (!reasons.length) {
-    reasonsEl.innerHTML = `<li class="health-reason-empty">Nothing currently dragging your score down.</li>`;
-  } else {
-    reasonsEl.innerHTML = reasons.slice(0, 6).map(r => `
-      <li class="health-reason">
-        <span class="reason-weight">−${r.weight}</span>
-        <span class="reason-label">${escHtml(r.label)}</span>
-      </li>
-    `).join("");
-  }
+  meta.hidden = false;
+  $("#score-chip").innerHTML = `${escHtml(h.score)}<span class="score-denom">/100</span>`;
+  const reasons = (h.reasons || []).slice(0, 5);
+  $("#statement-reasons").innerHTML = reasons.length
+    ? reasons.map(r => `
+        <li><span class="reason-weight">−${escHtml(r.weight)}</span>
+        <span>${escHtml(r.label)}</span></li>`).join("")
+    : `<li><span class="reason-weight"></span><span>Nothing is dragging your score down.</span></li>`;
 }
 
-// ── overview summary cards ────────────────────────────────────────────────
-function paintOverview() {
+// ── overview: needs-attention list ────────────────────────────────────────
+function paintAttention() {
+  const list = $("#attention-list");
+  // Before the first scan there is nothing honest to say here — hide the
+  // section rather than claim "every device has a name" about zero devices.
+  const scanned = !!STATE.last_scan_epoch;
+  $("#attention-section").hidden = !scanned;
+  $("#glance-heading").parentElement.hidden = !scanned;
+  if (!scanned) return;
+  const items = [];
+
+  for (const d of (STATE.triage || []).slice(0, 4)) {
+    const nm = bestName(d);
+    items.push({
+      kind: "device",
+      sev: "info",
+      icon: devIcon(d.device_type),
+      title: nm ? `Name “${nm}”` : "Name this new device",
+      sub: [d.type_label && d.type_label !== "Unknown" ? d.type_label : null,
+            d.vendor && d.vendor !== "—" && d.vendor !== nm ? d.vendor : null,
+            d.ip, d.mac].filter(Boolean).join("  ·  "),
+      when: timeAgo(d.first_seen),
+      go: () => showTab("devices"),
+    });
+  }
+  for (const a of (STATE.alerts || []).filter(a => !a.acknowledged).slice(0, 5)) {
+    items.push({
+      kind: "alert",
+      sev: a.severity || "info",
+      icon: SEV_ICON[a.severity] || SEV_ICON.info,
+      title: a.title,
+      sub: a.message,
+      when: timeAgo(a.ts),
+      go: () => showTab("activity"),
+    });
+  }
+  // Severity first (critical → warning → info), then recency as given.
+  const rank = { critical: 0, warning: 1, info: 2 };
+  items.sort((a, b) => (rank[a.sev] ?? 3) - (rank[b.sev] ?? 3));
+
+  if (!items.length) {
+    list.innerHTML = `
+      <div class="attention-clear">
+        ${SEV_ICON.ok}
+        <span>Nothing needs your attention. Every device has a name and there are no unread alerts.</span>
+      </div>`;
+    return;
+  }
+  list.innerHTML = items.slice(0, 6).map((it, i) => `
+    <button class="attention-row" data-att="${i}">
+      <span class="attention-glyph sev-${escHtml(it.sev)}">${it.icon}</span>
+      <span class="attention-body">
+        <span class="attention-title">${escHtml(it.title)}</span>
+        <span class="attention-sub">${escHtml(it.sub)}</span>
+      </span>
+      <span class="attention-when">${escHtml(it.when)}</span>
+    </button>`).join("");
+  list.querySelectorAll("[data-att]").forEach(el =>
+    el.addEventListener("click", () => items[Number(el.dataset.att)].go()));
+}
+
+// ── overview: glance strip ────────────────────────────────────────────────
+function paintGlance() {
   const grid = $("#overview-summary");
   const devs = STATE.devices || [];
-  const known   = devs.filter(d => d.is_known && !d.me).length;
-  const unknown = devs.filter(d => !d.is_known && !d.me).length;
-  const idents  = devs.filter(d => d.device_type !== "unknown").length;
+  const present = devs.filter(d => d.present !== false);
+  const known   = present.filter(d => d.is_known && !d.me).length;
+  const unknown = present.filter(d => !d.is_known && !d.me).length;
+  const away    = devs.filter(d => d.present === false).length;
   const wan     = (STATE.wan_mappings || []).length;
 
   grid.innerHTML = [
-    {label: "Devices seen", value: devs.length, kind: "info"},
-    {label: "Known",          value: known,       kind: "ok"},
-    {label: "Unknown",        value: unknown,     kind: unknown ? "warn" : "ok"},
-    {label: "Identified",     value: `${idents} / ${devs.length}`, kind: "info"},
-    {label: "WAN exposed",    value: wan,         kind: wan ? "crit" : "ok"},
-  ].map(s => `
-    <div class="ov-card ov-${s.kind}">
-      <div class="ov-num">${escHtml(s.value)}</div>
-      <div class="ov-lbl">${escHtml(s.label)}</div>
-    </div>
-  `).join("");
-}
-
-function paintOverviewAlerts() {
-  const list = $("#overview-alerts");
-  const recent = (STATE.alerts || []).slice(0, 4);
-  if (!recent.length) {
-    list.innerHTML = `<div class="empty">No alerts yet.</div>`;
-    return;
-  }
-  list.innerHTML = recent.map(alertRow).join("");
-  wireAlertActions(list);
+    { n: present.length, l: "connected now" },
+    { n: known,          l: "known devices" },
+    { n: unknown,        l: "unknown", cls: unknown ? "is-warn" : "" },
+    { n: away,           l: "recently away" },
+    { n: wan,            l: "reachable from the internet", cls: wan ? "is-crit" : "" },
+  ].map(c => `
+    <div class="glance-cell ${c.cls || ""}">
+      <span class="glance-num">${escHtml(c.n)}</span>
+      <span class="glance-lbl">${escHtml(c.l)}</span>
+    </div>`).join("");
 }
 
 // ── devices ───────────────────────────────────────────────────────────────
@@ -336,28 +420,11 @@ function deviceMatchesFilter(d) {
 
   const kf = $("#dev-known-filter").value;
   if (kf === "known"        && !d.is_known) return false;
-  if (kf === "unknown"      && d.is_known)  return false;
+  if (kf === "unknown"      && (d.is_known || d.me)) return false;
   if (kf === "unidentified" && d.device_type !== "unknown") return false;
   return true;
 }
 
-// Persisted across reloads. "grid" (default) or "list".
-let DEVICE_VIEW = localStorage.getItem("ins.devicesView") || "grid";
-
-function setDevicesView(mode) {
-  DEVICE_VIEW = (mode === "list") ? "list" : "grid";
-  localStorage.setItem("ins.devicesView", DEVICE_VIEW);
-  document.querySelectorAll(".vtbtn").forEach(b =>
-    b.classList.toggle("active", b.dataset.view === DEVICE_VIEW));
-  $("#device-grid").hidden = DEVICE_VIEW !== "grid";
-  $("#device-list").hidden = DEVICE_VIEW !== "list";
-  if (STATE) paintDevices();
-}
-document.querySelectorAll(".vtbtn").forEach(b =>
-  b.addEventListener("click", () => setDevicesView(b.dataset.view)));
-
-// Compact list view sort state. Persisted across reloads.
-// dir is "asc" or "desc"; key matches the data-sort attribute on a header cell.
 let LIST_SORT = (() => {
   try {
     return JSON.parse(localStorage.getItem("ins.listSort") || "null")
@@ -375,9 +442,8 @@ function setListSort(key) {
   applyListSortIndicators();
   if (STATE) paintDevices();
 }
-
 function applyListSortIndicators() {
-  document.querySelectorAll(".dl-head .dl-sort").forEach(el => {
+  $$(".dl-head .dl-sort").forEach(el => {
     const active = el.dataset.sort === LIST_SORT.key;
     el.classList.toggle("active", active);
     el.dataset.dir = active ? LIST_SORT.dir : "";
@@ -385,12 +451,10 @@ function applyListSortIndicators() {
       active ? (LIST_SORT.dir === "asc" ? "ascending" : "descending") : "none");
   });
 }
-
-document.querySelectorAll(".dl-head .dl-sort").forEach(el =>
+$$(".dl-head .dl-sort").forEach(el =>
   el.addEventListener("click", () => setListSort(el.dataset.sort)));
 applyListSortIndicators();
 
-// Numeric (dotted-quad) compare for IPs; lexical for everything else.
 function ipNum(s) {
   const parts = String(s || "").split(".").map(n => parseInt(n, 10));
   if (parts.length !== 4 || parts.some(isNaN)) return -1;
@@ -398,65 +462,13 @@ function ipNum(s) {
 }
 function sortKeyValue(d, key) {
   switch (key) {
-    case "name":   return (bestName(d) || "").toLowerCase();
+    case "name":   return (bestName(d) || "￿").toLowerCase();
     case "ip":     return ipNum(d.ip);
     case "mac":    return (d.mac || "").toLowerCase();
-    case "vendor": return (d.vendor || "").toLowerCase();
-    case "type":   return (d.type_label || d.device_type || "").toLowerCase();
     case "ports":  return (d.ports || []).length;
     case "bw":     return currentBps(d, "total");
     default:       return "";
   }
-}
-
-// Bandwidth helpers — samples come from the server as [(ts, bytes_in, bytes_out), ...]
-// each entry covering a ~60-second window flushed by the sniffer.
-function currentBps(d, dir /* "in" | "out" | "total" */) {
-  const s = d.bw_samples;
-  if (!Array.isArray(s) || !s.length) return 0;
-  const last = s[s.length - 1];
-  const window = 60;  // sniffer flush cadence
-  const bin  = last[1] / window;
-  const bout = last[2] / window;
-  if (dir === "in")  return bin;
-  if (dir === "out") return bout;
-  return bin + bout;
-}
-function fmtRate(bps) {
-  if (!bps || bps < 1) return "0";
-  const u = ["B/s","KB/s","MB/s","GB/s"];
-  let i = 0; let v = bps;
-  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
-  return (v >= 100 ? v.toFixed(0) : v.toFixed(1)) + " " + u[i];
-}
-function bandwidthCell(d) {
-  const samples = d.bw_samples || [];
-  if (!samples.length) {
-    return `<div class="dl-c dl-c-bw"><span class="bw-empty">—</span></div>`;
-  }
-  const inBps  = currentBps(d, "in");
-  const outBps = currentBps(d, "out");
-  // Sparkline: 60 slots @ 1px each = 60px wide; height 18px. Use TOTAL bytes
-  // (in+out) per sample so the line shape reflects "how active was this
-  // device", with in/out drawn as separate strokes.
-  const W = 80, H = 18;
-  const slots = samples.slice(-30);
-  const maxVal = Math.max(1, ...slots.map(s => Math.max(s[1], s[2])));
-  const scaleX = i => (W * i) / Math.max(1, slots.length - 1);
-  const scaleY = v => H - 1 - ((v / maxVal) * (H - 2));
-  const path = (idx) => slots.map((s, i) =>
-    `${i ? "L" : "M"}${scaleX(i).toFixed(1)} ${scaleY(s[idx]).toFixed(1)}`).join(" ");
-  return `
-    <div class="dl-c dl-c-bw" title="↓ ${fmtRate(inBps)}  ↑ ${fmtRate(outBps)} (last minute)">
-      <svg class="bw-spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
-        <path class="in"  d="${escHtml(path(1))}"></path>
-        <path class="out" d="${escHtml(path(2))}"></path>
-      </svg>
-      <div class="bw-rate">
-        <b>↓ ${escHtml(fmtRate(inBps))}</b><br>
-        <b>↑ ${escHtml(fmtRate(outBps))}</b>
-      </div>
-    </div>`;
 }
 function sortedForList(devices) {
   const { key, dir } = LIST_SORT;
@@ -470,64 +482,79 @@ function sortedForList(devices) {
   });
 }
 
+// Bandwidth helpers — samples are [(ts, bytes_in, bytes_out), ...] per ~60s window.
+function currentBps(d, dir) {
+  const s = d.bw_samples;
+  if (!Array.isArray(s) || !s.length) return 0;
+  const last = s[s.length - 1];
+  const bin  = last[1] / 60;
+  const bout = last[2] / 60;
+  if (dir === "in")  return bin;
+  if (dir === "out") return bout;
+  return bin + bout;
+}
+function fmtRate(bps) {
+  if (!bps || bps < 1) return "0";
+  const u = ["B/s", "KB/s", "MB/s", "GB/s"];
+  let i = 0, v = bps;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return (v >= 100 ? v.toFixed(0) : v.toFixed(1)) + " " + u[i];
+}
+function bandwidthCell(d) {
+  const samples = d.bw_samples || [];
+  if (!samples.length) {
+    return `<span class="dl-c dl-c-bw"><span class="bw-empty">—</span></span>`;
+  }
+  const inBps  = currentBps(d, "in");
+  const outBps = currentBps(d, "out");
+  const total  = inBps + outBps;
+  const W = 56, H = 18;
+  const slots = samples.slice(-30);
+  const maxVal = Math.max(1, ...slots.map(s => Math.max(s[1], s[2])));
+  const sx = i => (W * i) / Math.max(1, slots.length - 1);
+  const sy = v => H - 1 - ((v / maxVal) * (H - 2));
+  const path = (idx) => slots.map((s, i) =>
+    `${i ? "L" : "M"}${sx(i).toFixed(1)} ${sy(s[idx]).toFixed(1)}`).join(" ");
+  return `
+    <span class="dl-c dl-c-bw" title="Down ${escHtml(fmtRate(inBps))} · up ${escHtml(fmtRate(outBps))} (last minute)">
+      <svg class="bw-spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+        <path class="in"  d="${escHtml(path(1))}"></path>
+        <path class="out" d="${escHtml(path(2))}"></path>
+      </svg>
+      <span class="bw-rate">${escHtml(fmtRate(total))}</span>
+    </span>`;
+}
+
 function paintDevices() {
-  // Rebuild the type filter only when the set of seen types actually changes,
-  // and never while the user is interacting with it — rebuilding collapses an
-  // open native dropdown and clobbers an in-progress keyboard selection.
+  // Rebuild the type filter only when the option set changed and it's not in use.
   const sel = $("#dev-type-filter");
-  const seenTypes = [...new Set(STATE.devices.map(d => d.device_type).filter(Boolean))].sort();
+  const seenTypes = [...new Set((STATE.devices || []).map(d => d.device_type).filter(Boolean))].sort();
   const currentOpts = Array.from(sel.options).map(o => o.value).filter(Boolean).sort();
   if (currentOpts.join(",") !== seenTypes.join(",") && document.activeElement !== sel) {
     const prev = sel.value;
     sel.innerHTML = `<option value="">All types</option>` +
       seenTypes.map(t => {
         const ex = STATE.devices.find(d => d.device_type === t);
-        return `<option value="${escHtml(t)}">${escHtml(ex?.type_icon || "")} ${escHtml(ex?.type_label || t)}</option>`;
+        return `<option value="${escHtml(t)}">${escHtml(ex?.type_label || t)}</option>`;
       }).join("");
     if (seenTypes.includes(prev)) sel.value = prev;
   }
 
-  // Ensure the right view container is visible (handles first paint).
-  $("#device-grid").hidden = DEVICE_VIEW !== "grid";
-  $("#device-list").hidden = DEVICE_VIEW !== "list";
-
-  const visible = STATE.devices.filter(deviceMatchesFilter);
-  if (DEVICE_VIEW === "list") {
-    paintDevicesList(visible);
-  } else {
-    paintDevicesGrid(visible);
-  }
-}
-
-function paintDevicesGrid(visible) {
-  const grid = $("#device-grid");
-  if (!visible.length) {
-    grid.innerHTML = `<div class="empty">No devices match the current filter.</div>`;
-    return;
-  }
-  grid.innerHTML = visible.map(deviceCard).join("");
-  grid.querySelectorAll("[data-action]").forEach(el => {
-    el.addEventListener("click", onDeviceAction);
-  });
-}
-
-function paintDevicesList(visible) {
   const body = $("#device-list-body");
+  const visible = (STATE.devices || []).filter(deviceMatchesFilter);
   if (!visible.length) {
-    body.innerHTML = `<div class="empty">No devices match the current filter.</div>`;
+    body.innerHTML = (STATE.devices || []).length
+      ? `<div class="empty">No devices match the current filter.</div>`
+      : `<div class="empty">No devices yet. The first scan is on its way.</div>`;
     return;
   }
-  body.innerHTML = sortedForList(visible).map(deviceListRow).join("");
+  body.innerHTML = sortedForList(visible).map(deviceRow).join("");
   body.querySelectorAll("[data-action]").forEach(el => {
-    el.addEventListener("click", (e) => {
-      e.stopPropagation();
-      onDeviceAction(e);
-    });
+    el.addEventListener("click", (e) => { e.stopPropagation(); onDeviceAction(e); });
   });
   body.querySelectorAll("[data-row-mac]").forEach(row => {
     row.addEventListener("click", () => openDeviceStory(row.dataset.rowMac));
     row.addEventListener("keydown", (e) => {
-      // Only when focus is on the row itself, not an inner action button.
       if ((e.key === "Enter" || e.key === " ") &&
           !e.target.closest("[data-action], button, input, select")) {
         e.preventDefault();
@@ -537,108 +564,45 @@ function paintDevicesList(visible) {
   });
 }
 
-function deviceListRow(d) {
+function deviceRow(d) {
+  const identifying = !d.me && !d.is_known &&
+    (d.device_type === "unknown" || (d.type_confidence ?? 0) < 0.3);
   const dotKlass = d.me ? "s-me"
                  : d.is_known ? "s-known"
-                 : (d.device_type === "unknown" || (d.type_confidence ?? 0) < 0.3) ? "s-identifying"
+                 : identifying ? "s-identifying"
                  : "s-unknown";
-  const name = bestName(d) || "(unnamed)";
-  const ports = (d.ports || []).slice(0, 6).map(p =>
+  const name = bestName(d);
+  const away = d.present === false;
+  const subBits = [];
+  if (d.type_label && d.type_label !== "Unknown") subBits.push(d.type_label);
+  else if (identifying) subBits.push("Identifying…");
+  if (d.vendor && d.vendor !== "—" && d.vendor !== name) subBits.push(d.vendor);
+  if (away) subBits.push(`away · last seen ${timeAgo(d.last_seen)}`);
+
+  const ports = (d.ports || []).slice(0, 5).map(p =>
     `<span class="port-chip${RISKY_PORTS.has(p) ? " risky" : ""}">${p}</span>`).join("");
-  const extraPortCount = Math.max(0, (d.ports || []).length - 6);
+  const extraPorts = Math.max(0, (d.ports || []).length - 5);
+
   const action = d.me ? `<span class="dl-self">you</span>`
     : d.is_known
-      ? `<button class="btn btn-tiny btn-danger" data-action="unknown" data-mac="${escHtml(d.mac)}">Unknown</button>`
-      : `<button class="btn btn-tiny btn-primary" data-action="known" data-mac="${escHtml(d.mac)}" data-name="${escHtml(name)}">Mark Known</button>`;
+      ? `<button class="btn btn-ghost" data-action="unknown" data-mac="${escHtml(d.mac)}">Forget</button>`
+      : `<button class="btn" data-action="known" data-mac="${escHtml(d.mac)}" data-name="${escHtml(name)}">Name</button>`;
+
   return `
-    <div class="dl-row${d.present === false ? " is-away" : ""}" data-row-mac="${escHtml(d.mac)}" tabindex="0" aria-label="View details for ${escHtml(name)}${d.present === false ? " (last seen " + timeAgo(d.last_seen) + ")" : ""}">
-      <div class="dl-c dl-c-status"><span class="dc-status ${dotKlass}"></span></div>
-      <div class="dl-c dl-c-icon">${escHtml(d.type_icon || "❔")}</div>
-      <div class="dl-c dl-c-name">${escHtml(name)}</div>
-      <div class="dl-c dl-c-ip">${escHtml(d.ip || "—")}</div>
-      <div class="dl-c dl-c-mac">${escHtml(d.mac || "—")}</div>
-      <div class="dl-c dl-c-vendor">${escHtml(d.vendor || "—")}</div>
-      <div class="dl-c dl-c-type">${escHtml(d.type_label || "—")}</div>
+    <div class="dl-row${away ? " is-away" : ""}" data-row-mac="${escHtml(d.mac)}" tabindex="0" role="button"
+         aria-label="View details for ${escHtml(name || d.ip || "device")}">
+      <span class="dl-c"><span class="dc-status ${dotKlass}"></span></span>
+      <span class="dl-c dl-c-icon">${devIcon(d.device_type)}</span>
+      <span class="dl-c dl-c-name">
+        <span class="dev-name${name ? "" : " unnamed"}">${escHtml(name || "unnamed device")}</span>
+        ${subBits.length ? `<span class="dev-sub">${escHtml(subBits.join("  ·  "))}</span>` : ""}
+      </span>
+      <span class="dl-c dl-c-ip">${escHtml(d.ip || "—")}</span>
+      <span class="dl-c dl-c-mac">${escHtml(d.mac || "—")}</span>
       ${bandwidthCell(d)}
-      <div class="dl-c dl-c-ports">${ports}${extraPortCount ? `<span class="dl-ports-more">+${extraPortCount}</span>` : ""}</div>
-      <div class="dl-c dl-c-actions">${action}</div>
+      <span class="dl-c dl-c-ports">${ports}${extraPorts ? `<span class="dl-ports-more">+${extraPorts}</span>` : ""}</span>
+      <span class="dl-c dl-c-actions">${action}</span>
     </div>`;
-}
-
-// Pick the best human-readable name we can derive from what we know about a
-// device. Priority: explicit Known label > strongest probe fingerprint
-// (mDNS/SSDP/SMB friendlyName, HTTP page title) > reverse-DNS hostname >
-// vendor OUI lookup. Returns "" if nothing usable is available so callers
-// can choose their own fallback string ("(unnamed)", "Identifying…", etc).
-function bestName(d) {
-  if (d.known_name)                        return d.known_name;
-  if (d.fingerprint)                       return d.fingerprint;
-  if (d.hostname && d.hostname !== "—")    return d.hostname.replace(/\.local\.?$/i, "");
-  if (d.vendor && d.vendor !== "—")        return d.vendor;
-  return "";
-}
-
-function deviceCard(d) {
-  const mainName  = bestName(d);
-  const subBits = [];
-  if (d.ip)  subBits.push(d.ip);
-  if (d.mac) subBits.push(d.mac);
-  if (d.present === false) subBits.push(`last seen ${timeAgo(d.last_seen)}`);
-  else if (d.latency != null) subBits.push(`${d.latency} ms`);
-
-  // Confidence-aware classes: gray ("identifying") when we haven't classified yet.
-  const unidentified = (d.device_type === "unknown" || (d.type_confidence ?? 0) < 0.3);
-  const klass = d.me ? "is-me"
-              : d.is_known ? "is-known"
-              : unidentified ? "is-identifying"
-              : "is-unknown";
-  const dotKlass = d.me ? "s-me"
-                 : d.is_known ? "s-known"
-                 : unidentified ? "s-identifying"
-                 : "s-unknown";
-
-  const ports = (d.ports || []).map(p => {
-    const risky = RISKY_PORTS.has(p);
-    return `<span class="port-chip${risky ? " risky" : ""}">${p}</span>`;
-  }).join("");
-
-  const meta = [];
-  meta.push(`<dt>Type</dt><dd>${escHtml(d.type_icon || "")} ${escHtml(d.type_label || "Identifying…")}</dd>`);
-  if (d.vendor && d.vendor !== "—") meta.push(`<dt>Vendor</dt><dd>${escHtml(d.vendor)}</dd>`);
-  if (d.fingerprint)                meta.push(`<dt>Identity</dt><dd>${escHtml(d.fingerprint)}</dd>`);
-  if (d.first_seen)                 meta.push(`<dt>First seen</dt><dd>${escHtml(timeAgo(d.first_seen))}</dd>`);
-  if ((d.wan_exposed || []).length) {
-    meta.push(`<dt>WAN exposed</dt><dd class="warn">${(d.wan_exposed || []).map(m => `:${escHtml(m.external_port)}/${escHtml(m.protocol)}`).join(" ")}</dd>`);
-  }
-
-  const probeToggle = d.me ? "" : `
-    <button class="btn btn-ghost btn-tiny" data-action="probe" data-mac="${escHtml(d.mac)}" data-state="${d.no_probe ? "1" : "0"}">
-      ${d.no_probe ? "Resume probing" : "Don't probe this device"}
-    </button>`;
-
-  const actions = d.me ? "" : `
-    <div class="dc-actions">
-      ${d.is_known
-        ? `<button class="btn btn-danger" data-action="unknown" data-mac="${escHtml(d.mac)}">Remove from Known</button>`
-        : `<button class="btn btn-primary" data-action="known"   data-mac="${escHtml(d.mac)}" data-name="${escHtml(mainName || "")}">Mark as Known</button>`}
-      <button class="btn" data-action="wol" data-mac="${escHtml(d.mac)}">Wake</button>
-      ${probeToggle}
-    </div>`;
-
-  return `
-    <article class="device-card ${klass}${d.present === false ? " is-away" : ""}" tabindex="0" aria-label="View details for ${escHtml(mainName || d.ip || "device")}">
-      <div class="dc-head">
-        <div class="dc-typeicon">${escHtml(d.type_icon || "❔")}</div>
-        <div class="dc-name">
-          <div class="dc-name-main">${escHtml(mainName || "(unnamed)")}</div>
-          <div class="dc-name-sub">${escHtml(subBits.join("  ·  "))}</div>
-        </div>
-        <div class="dc-status ${dotKlass}"></div>
-      </div>
-      <dl class="dc-meta">${meta.join("")}</dl>
-      ${ports ? `<div class="dc-ports">${ports}</div>` : ""}
-      ${actions}
-    </article>`;
 }
 
 async function onDeviceAction(e) {
@@ -647,7 +611,7 @@ async function onDeviceAction(e) {
   const action = el.dataset.action;
   if (action === "known") {
     const name = prompt("Name for this device:", el.dataset.name || "");
-    if (name === null) return;   // Cancel aborts — don't mark the device Known
+    if (name === null) return;
     await api("/api/known/add", { mac, name });
   } else if (action === "unknown") {
     await api("/api/known/remove", { mac });
@@ -661,35 +625,34 @@ async function onDeviceAction(e) {
 }
 
 ["#dev-search", "#dev-type-filter", "#dev-known-filter"].forEach(s =>
-  document.querySelector(s).addEventListener("input", paintDevices));
+  document.querySelector(s).addEventListener("input", () => { if (STATE) paintDevices(); }));
 
-// ── triage ────────────────────────────────────────────────────────────────
+// ── triage strip ──────────────────────────────────────────────────────────
 function paintTriage() {
-  const list = $("#triage-list");
-  // Don't rebuild the list out from under someone typing a device name — the
-  // ~30s scan cadence would otherwise wipe a half-typed entry. Scoped to the
-  // name INPUT specifically: guarding the whole list would also suppress the
-  // post-action repaint when an action button is focused (Chromium focuses
-  // buttons on click), leaving a just-actioned device visibly stuck.
+  const strip = $("#triage-strip");
+  const list  = $("#triage-list");
+  // Don't rebuild while the user is typing a name.
   if (document.activeElement && document.activeElement.matches("#triage-list .triage-name")) return;
   const items = STATE.triage || [];
-  if (!items.length) {
-    list.innerHTML = `<div class="empty">Nothing to triage — every device is marked as known.</div>`;
-    return;
-  }
+  strip.hidden = !items.length;
+  if (!items.length) { list.innerHTML = ""; return; }
+
+  $("#triage-heading").textContent =
+    `${items.length} new device${items.length === 1 ? "" : "s"} to name`;
+
   list.innerHTML = items.map(d => {
     const suggested = bestName(d);
     return `
       <div class="triage-row" data-mac="${escHtml(d.mac)}">
-        <div class="triage-icon">${escHtml(d.type_icon || "❔")}</div>
-        <div class="triage-info">
-          <div class="triage-title">${escHtml(d.type_label || "Unknown device")} <span class="triage-vendor">${escHtml(d.vendor || "")}</span></div>
-          <div class="triage-sub">${escHtml(d.ip)} · ${escHtml(d.mac)} · first seen ${escHtml(timeAgo(d.first_seen || 0))}</div>
-          ${d.fingerprint ? `<div class="triage-fp">${escHtml(d.fingerprint)}</div>` : ""}
-        </div>
+        <span class="triage-icon">${devIcon(d.device_type)}</span>
+        <span class="triage-info">
+          <span class="triage-title">${escHtml(d.type_label || "Unknown device")}<span class="triage-vendor">${escHtml(d.vendor && d.vendor !== "—" ? d.vendor : "")}</span></span>
+          <span class="triage-sub">${escHtml(d.ip)} · ${escHtml(d.mac)} · first seen ${escHtml(timeAgo(d.first_seen || 0))}</span>
+          ${d.fingerprint ? `<span class="triage-fp">${escHtml(d.fingerprint)}</span>` : ""}
+        </span>
         <input type="text" class="triage-name" aria-label="Device name" placeholder="Name this device" value="${escHtml(suggested)}">
-        <button class="btn btn-primary" data-triage-act="known">Mark Known</button>
-        <button class="btn btn-danger"  data-triage-act="block">Block / Ignore</button>
+        <button class="btn" data-triage-act="known">Save</button>
+        <button class="btn btn-ghost" data-triage-act="block" title="Stop actively probing this device">Ignore</button>
       </div>`;
   }).join("");
 
@@ -697,8 +660,7 @@ function paintTriage() {
     b.addEventListener("click", async () => {
       const row = b.closest(".triage-row");
       const mac = row.dataset.mac;
-      const act = b.dataset.triageAct;
-      if (act === "known") {
+      if (b.dataset.triageAct === "known") {
         const name = row.querySelector(".triage-name").value.trim();
         await api("/api/known/add", { mac, name });
       } else {
@@ -716,7 +678,7 @@ $("#triage-bulk-known").addEventListener("click", async () => {
     name: r.querySelector(".triage-name").value.trim(),
   })).filter(e => e.mac);
   if (!entries.length) return;
-  if (!confirm(`Mark ${entries.length} device${entries.length === 1 ? "" : "s"} as Known?`)) return;
+  if (!confirm(`Mark ${entries.length} device${entries.length === 1 ? "" : "s"} as known?`)) return;
   await api("/api/triage/bulk_known", { entries });
   refresh();
 });
@@ -726,20 +688,12 @@ function paintAlerts() {
   const list = $("#alerts-list");
   const alerts = STATE.alerts || [];
   if (!alerts.length) {
-    list.innerHTML = `<div class="empty">No alerts yet. New devices and risky ports will show up here.</div>`;
+    list.innerHTML = `<div class="empty">Nothing has needed your attention yet. New devices and risky ports will show up here.</div>`;
     return;
   }
   list.innerHTML = alerts.map(alertRow).join("");
   wireAlertActions(list);
 }
-
-// Stroke SVG severity glyphs. Keeps icons consistent across the dashboard and
-// avoids the AI-emoji look on a security-ops surface.
-const SEV_ICON = {
-  critical: `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9.25"/><path d="M12 8v5"/><circle cx="12" cy="16.4" r=".7" fill="currentColor" stroke="none"/></svg>`,
-  warning:  `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.66 3.62 1.95 18.5a1.55 1.55 0 0 0 1.34 2.33h17.42a1.55 1.55 0 0 0 1.34-2.33L13.34 3.62a1.55 1.55 0 0 0-2.68 0Z"/><path d="M12 10v4"/><circle cx="12" cy="17.4" r=".7" fill="currentColor" stroke="none"/></svg>`,
-  info:     `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9.25"/><path d="M12 11.2v4.6"/><circle cx="12" cy="8.2" r=".75" fill="currentColor" stroke="none"/></svg>`,
-};
 
 function alertRow(a) {
   const sev  = a.severity || "info";
@@ -750,10 +704,10 @@ function alertRow(a) {
       <div class="alert-body">
         <div class="alert-title">${escHtml(a.title)}</div>
         <div class="alert-msg">${escHtml(a.message)}</div>
-        <div class="alert-time">${escHtml(timeAgo(a.ts))}  ·  ${escHtml(a.kind)}</div>
+        <div class="alert-time">${escHtml(timeAgo(a.ts))} · ${escHtml(a.kind)}</div>
       </div>
       <div class="alert-actions">
-        <button class="btn btn-ghost btn-tiny" data-explain="${escHtml(a.kind)}">What does this mean?</button>
+        <button class="btn btn-ghost" data-explain="${escHtml(a.kind)}">What does this mean?</button>
         ${a.acknowledged ? "" : `<button class="btn" data-ack="${a.id}">Mark read</button>`}
       </div>
     </div>`;
@@ -805,17 +759,16 @@ $("#drawer-scrim").addEventListener("click", closeExplainer);
 // ── history chart ─────────────────────────────────────────────────────────
 function drawHistory() {
   const canvas = $("#history-chart");
-  if (!canvas) return;
-  // Read the live design tokens so the chart matches the rest of the dashboard
-  // (the redesign moved off the old neon-cyan palette). Fall back if unset.
-  const cssVar = (name, fb) =>
+  if (!canvas || CURRENT_TAB !== "activity") return;
+  const css = (name, fb) =>
     (getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fb);
-  const accent = cssVar("--accent", "#6BBDC6");
-  const grid   = cssVar("--border", "rgba(255,255,255,.06)");
-  const labelC = cssVar("--text-3", "#8A92A1");
-  const mono   = "10px ui-monospace, 'Geist Mono', monospace";
+  const accent = css("--accent", "#7fc7cf");
+  const grid   = css("--line", "rgba(255,255,255,.07)");
+  const labelC = css("--text-3", "#7c8698");
+  const mono   = "10px 'Geist Mono', ui-monospace, monospace";
   const dpr = window.devicePixelRatio || 1;
   const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (!w || !h) return;
   canvas.width = w * dpr; canvas.height = h * dpr;
   const ctx = canvas.getContext("2d");
   ctx.scale(dpr, dpr);
@@ -828,21 +781,21 @@ function drawHistory() {
     return;
   }
   const max = Math.max(...HISTORY.map(p => p.count), 1);
-  const min = 0;
-  const padX = 40, padY = 20;
-  const innerW = w - padX * 2, innerH = h - padY * 2;
+  const padX = 40, padY = 18;
+  const innerW = w - padX - 16, innerH = h - padY * 2;
   const xs = (i) => padX + (i / (HISTORY.length - 1 || 1)) * innerW;
-  const ys = (v) => padY + innerH - ((v - min) / (max - min || 1)) * innerH;
+  const ys = (v) => padY + innerH - (v / max) * innerH;
 
   ctx.strokeStyle = grid;
   ctx.lineWidth = 1;
   for (let i = 0; i <= 4; i++) {
     const y = padY + (innerH * i) / 4;
-    ctx.beginPath(); ctx.moveTo(padX, y); ctx.lineTo(w - padX, y); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(padX, y); ctx.lineTo(w - 16, y); ctx.stroke();
   }
 
   ctx.strokeStyle = accent;
   ctx.lineWidth = 1.5;
+  ctx.lineJoin = "round";
   ctx.beginPath();
   HISTORY.forEach((p, i) => {
     if (i === 0) ctx.moveTo(xs(i), ys(p.count));
@@ -853,7 +806,7 @@ function drawHistory() {
   ctx.lineTo(xs(HISTORY.length - 1), padY + innerH);
   ctx.lineTo(xs(0), padY + innerH);
   ctx.closePath();
-  ctx.globalAlpha = 0.08;
+  ctx.globalAlpha = 0.07;
   ctx.fillStyle = accent;
   ctx.fill();
   ctx.globalAlpha = 1;
@@ -862,34 +815,233 @@ function drawHistory() {
   ctx.font = mono;
   ctx.textAlign = "right";
   for (let i = 0; i <= 4; i++) {
-    const v = Math.round(max - ((max - min) * i) / 4);
-    ctx.fillText(String(v), padX - 8, padY + (innerH * i) / 4 + 3);
+    const v = Math.round(max - (max * i) / 4);
+    ctx.fillText(String(v), padX - 9, padY + (innerH * i) / 4 + 3);
   }
 }
 
-// ── known list ────────────────────────────────────────────────────────────
-function paintKnown() {
-  const list = $("#known-list");
-  const entries = Object.entries(STATE.known || {});
-  if (!entries.length) {
-    list.innerHTML = `<div class="empty">No devices marked as Known yet.</div>`;
-    return;
-  }
-  list.innerHTML = entries.map(([mac, info]) => `
-    <div class="known-row">
-      <span class="km">${escHtml(mac)}</span>
-      <span class="kn">${escHtml(info.name || "(no label)")}</span>
-      <button class="btn btn-danger" data-known-remove="${escHtml(mac)}">Remove</button>
-    </div>
-  `).join("");
-  list.querySelectorAll("[data-known-remove]").forEach(b =>
-    b.addEventListener("click", async () => {
-      await api("/api/known/remove", { mac: b.dataset.knownRemove });
-      refresh();
-    }));
+let _historyResizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(_historyResizeTimer);
+  _historyResizeTimer = setTimeout(() => {
+    if (CURRENT_TAB === "activity") drawHistory();
+  }, 150);
+});
+
+// ── device story drawer ───────────────────────────────────────────────────
+async function openDeviceStory(mac) {
+  const opener = document.activeElement;
+  try {
+    const story = await fetch(`/api/device/${encodeURIComponent(mac)}`).then(r => r.json());
+    if (!story || story.error) return;
+    _lastFocus = opener;
+    const d = story.device || {};
+    const fpHints = d.fingerprint || {};
+    const fpText = typeof fpHints === "string" ? fpHints
+      : (fpHints.mdns || fpHints.ssdp || fpHints.smb || fpHints.dhcp_hostname || "");
+    const name = story.known_name || fpText ||
+      (d.hostname && d.hostname !== "—" ? d.hostname : "") || d.vendor || mac;
+    $("#device-drawer-title").textContent = name;
+
+    const sightings = (story.sightings || []).slice(0, 30);
+    const sightingsHtml = sightings.length
+      ? sightings.map(s => `
+          <div class="dstory-row">
+            <span class="dstory-ts">${escHtml(new Date(s.ts * 1000).toLocaleString())}</span>
+            <span class="dstory-ip">${escHtml(s.ip || "—")}</span>
+            <span class="dstory-lat">${s.latency_ms != null ? escHtml(s.latency_ms) + " ms" : ""}</span>
+          </div>`).join("")
+      : `<div class="empty">No sightings recorded yet.</div>`;
+
+    const alerts = (story.alerts || []).slice(0, 20);
+    const alertsHtml = alerts.length
+      ? alerts.map(a => {
+          const sev = a.severity || "info";
+          return `
+            <div class="dstory-alert sev-${escHtml(sev)}">
+              <div class="dstory-alert-head"><span class="dstory-alert-icon">${SEV_ICON[sev] || SEV_ICON.info}</span><strong>${escHtml(a.title)}</strong></div>
+              <div class="dstory-alert-msg">${escHtml(a.message)}</div>
+              <div class="dstory-alert-ts">${escHtml(new Date(a.ts * 1000).toLocaleString())}${a.acknowledged ? " · read" : ""}</div>
+            </div>`;
+        }).join("")
+      : `<div class="empty">No alerts triggered by this device.</div>`;
+
+    const ports = (d.ports || []).length
+      ? (d.ports || []).map(p => `<span class="port-chip${RISKY_PORTS.has(p) ? " risky" : ""}">${p}</span>`).join("")
+      : `<span class="empty-inline">No open ports observed.</span>`;
+
+    const wan = (story.wan_exposed || []).length
+      ? (story.wan_exposed || []).map(m => `<div class="dstory-wan">${SEV_ICON.warning}<span>External port ${escHtml(m.external_port)}/${escHtml(m.protocol)} is forwarded to this device (port ${escHtml(m.internal_port)})</span></div>`).join("")
+      : "";
+
+    const routerKind = (STATE.settings && STATE.settings.router_kind) || "none";
+    const isMe = !!d.me;
+    const routerButtons = (routerKind === "none" || isMe) ? "" : `
+      <div class="dstory-router-actions">
+        <button class="btn btn-danger" id="router-block-mac" data-mac="${escHtml(d.mac || mac)}">Block on router</button>
+        <button class="btn" id="router-unblock-mac" data-mac="${escHtml(d.mac || mac)}">Unblock</button>
+        <span class="dstory-router-status" id="dstory-router-status"></span>
+      </div>`;
+
+    const probeBtn = isMe ? "" : `
+      <div class="dstory-router-actions">
+        <button class="btn btn-ghost" data-action="probe" data-mac="${escHtml(d.mac || mac)}" data-state="${d.no_probe ? "1" : "0"}">
+          ${d.no_probe ? "Resume probing" : "Don't probe this device"}
+        </button>
+        <button class="btn btn-ghost" data-action="wol" data-mac="${escHtml(d.mac || mac)}">Wake on LAN</button>
+      </div>`;
+
+    $("#device-drawer-body").innerHTML = `
+      ${routerButtons}
+      ${wan}
+      <h3>Identity</h3>
+      <dl class="dstory-meta">
+        <dt>IP</dt><dd class="mono">${escHtml(d.ip || "—")}</dd>
+        <dt>MAC</dt><dd class="mono">${escHtml(d.mac || mac)}</dd>
+        <dt>Vendor</dt><dd>${escHtml(d.vendor || "—")}</dd>
+        <dt>Type</dt><dd>${escHtml(d.device_type || "unknown")} <span class="mono">(${Math.round((d.type_confidence || 0) * 100)}% confident)</span></dd>
+        <dt>First seen</dt><dd>${escHtml(d.first_seen ? new Date(d.first_seen * 1000).toLocaleString() : "—")}</dd>
+        <dt>Last seen</dt><dd>${escHtml(d.last_seen ? new Date(d.last_seen * 1000).toLocaleString() : "—")}</dd>
+        <dt>Times seen</dt><dd class="mono">${escHtml(d.seen_count || 0)}</dd>
+        <dt>Known</dt><dd>${story.is_known ? `<strong>${escHtml(story.known_name || "yes")}</strong>` : "not yet"}</dd>
+      </dl>
+      <h3>Open ports</h3>
+      <div class="dc-ports">${ports}</div>
+      <h3>Recent sightings</h3>
+      <div class="dstory-list">${sightingsHtml}</div>
+      ${renderBandwidthBlock(story.bandwidth || [])}
+      ${renderDnsBlock(story.dns || [])}
+      <h3>Alerts from this device</h3>
+      <div class="dstory-list">${alertsHtml}</div>
+      ${probeBtn}
+    `;
+
+    $("#device-drawer").hidden = false;
+    $("#drawer-scrim").hidden = false;
+    _syncModalState();
+    $("#device-drawer-close").focus();
+
+    $("#device-drawer-body").querySelectorAll("[data-action]").forEach(el =>
+      el.addEventListener("click", (e) => { onDeviceAction(e); closeDeviceDrawer(); }));
+
+    const wireRouter = (sel, path, verb) =>
+      document.getElementById(sel)?.addEventListener("click", async (e) => {
+        const btn = e.currentTarget;
+        const status = $("#dstory-router-status");
+        const macAddr = btn.dataset.mac;
+        if (verb === "block" && !confirm(`Block ${macAddr} on your router? It will be kicked off the WiFi immediately.`)) return;
+        status.textContent = `${verb}ing…`;
+        const r = await api(path, { mac: macAddr });
+        status.textContent = r.ok ? `${verb}ed ✓` : `${verb} failed: ${r.error || "unknown"}`;
+      });
+    wireRouter("router-block-mac",   "/api/router/block",   "block");
+    wireRouter("router-unblock-mac", "/api/router/unblock", "unblock");
+  } catch (e) { /* swallow */ }
 }
 
-// ── webhooks ──────────────────────────────────────────────────────────────
+function fmtBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function renderBandwidthBlock(samples) {
+  if (!samples.length) {
+    return `<h3>Bandwidth (last hour)</h3>
+            <div class="empty">No data — bandwidth needs the passive sniffer (Settings → Passive sniffer).</div>`;
+  }
+  const totalIn  = samples.reduce((s, r) => s + (r.bytes_in  || 0), 0);
+  const totalOut = samples.reduce((s, r) => s + (r.bytes_out || 0), 0);
+  const max = Math.max(...samples.map(r => Math.max(r.bytes_in, r.bytes_out)), 1);
+  const bars = samples.slice(-60).map(r => {
+    const inH  = Math.max(2, Math.round((r.bytes_in  / max) * 40));
+    const outH = Math.max(2, Math.round((r.bytes_out / max) * 40));
+    return `<span class="bw-pair" title="${new Date(r.ts * 1000).toLocaleTimeString()}: down ${fmtBytes(r.bytes_in)} / up ${fmtBytes(r.bytes_out)}">
+              <span class="bw-bar bw-in"  style="height:${inH}px"></span>
+              <span class="bw-bar bw-out" style="height:${outH}px"></span>
+            </span>`;
+  }).join("");
+  return `<h3>Bandwidth (last hour)</h3>
+          <div class="bw-summary">Down <strong>${fmtBytes(totalIn)}</strong> · Up <strong>${fmtBytes(totalOut)}</strong></div>
+          <div class="bw-chart">${bars}</div>`;
+}
+
+function renderDnsBlock(queries) {
+  if (!queries.length) {
+    return `<h3>DNS lookups</h3>
+            <div class="empty">No DNS logged for this device. Needs the passive sniffer.</div>`;
+  }
+  const rows = queries.slice(0, 25).map(q => `
+    <div class="dstory-row">
+      <span class="dstory-ts">${escHtml(new Date(q.ts * 1000).toLocaleString())}</span>
+      <span class="dstory-ip">${escHtml(q.qname)}</span>
+    </div>`).join("");
+  return `<h3>DNS lookups</h3>
+          <div class="dstory-list">${rows}</div>`;
+}
+
+function closeDeviceDrawer() {
+  $("#device-drawer").hidden = true;
+  if ($("#alert-drawer").hidden) $("#drawer-scrim").hidden = true;
+  _syncModalState();
+  _restoreFocus();
+}
+$("#device-drawer-close").addEventListener("click", closeDeviceDrawer);
+$("#drawer-scrim").addEventListener("click", closeDeviceDrawer);
+
+// ── onboarding tour ───────────────────────────────────────────────────────
+const TOUR_STEPS = [
+  {
+    title: "Welcome to Inglorious Network Scanner",
+    body:  "INS quietly watches everything on your WiFi and tells you, in plain English, when something deserves attention. Two things worth knowing before you dive in.",
+  },
+  {
+    title: "The Overview answers one question",
+    body:  "Is my network okay? The big statement at the top tells you outright, and everything that needs you is collected right beneath it, most serious first.",
+  },
+  {
+    title: "Name your devices once",
+    body:  "The Devices tab lists everything connected. Spend two minutes naming what you recognize (your phone, the TV, the printer) so INS only ever bothers you about genuine strangers.",
+  },
+];
+let TOUR_INDEX = 0;
+function showOnboardingIfNeeded() {
+  if (!STATE || !STATE.settings) return;
+  if (STATE.settings.first_run_done) return;
+  if (!$("#onboarding").hidden) return;
+  TOUR_INDEX = 0;
+  renderTourStep();
+  $("#onboarding").hidden = false;
+  _syncModalState();
+  $("#onboarding-next").focus();
+}
+function renderTourStep() {
+  const step = TOUR_STEPS[TOUR_INDEX];
+  $("#onboarding-step").innerHTML =
+    `<h2>${escHtml(step.title)}</h2><p>${escHtml(step.body)}</p>`;
+  $("#onboarding-pips").innerHTML = TOUR_STEPS
+    .map((_, i) => `<span class="pip ${i === TOUR_INDEX ? "active" : ""}"></span>`).join("");
+  $("#onboarding-next").textContent =
+    TOUR_INDEX === TOUR_STEPS.length - 1 ? "Got it" : "Next";
+}
+async function finishTour() {
+  $("#onboarding").hidden = true;
+  _syncModalState();
+  await api("/api/settings/save", { first_run_done: "1" });
+  refresh();
+}
+$("#onboarding-next").addEventListener("click", () => {
+  if (TOUR_INDEX < TOUR_STEPS.length - 1) {
+    TOUR_INDEX++;
+    renderTourStep();
+  } else {
+    finishTour();
+  }
+});
+$("#onboarding-skip").addEventListener("click", finishTour);
+
+// ── settings: webhooks ────────────────────────────────────────────────────
 function paintWebhooks() {
   const list = $("#webhook-list");
   const hooks = STATE.webhooks || [];
@@ -930,7 +1082,7 @@ $("#wh-add").addEventListener("click", async () => {
   refresh();
 });
 
-// ── hook script ───────────────────────────────────────────────────────────
+// ── settings: hook script ─────────────────────────────────────────────────
 function paintHook() {
   const ta = $("#hook-script");
   if (document.activeElement !== ta) {
@@ -941,235 +1093,7 @@ $("#hook-save").addEventListener("click", async () => {
   await api("/api/hook", { script: $("#hook-script").value });
 });
 
-// ── utils ─────────────────────────────────────────────────────────────────
-function timeAgo(tsSeconds) {
-  if (!tsSeconds) return "just now";
-  const diff = Date.now() / 1000 - tsSeconds;
-  if (diff < 60)      return `${Math.round(diff)}s ago`;
-  if (diff < 3600)    return `${Math.round(diff / 60)}m ago`;
-  if (diff < 86400)   return `${Math.round(diff / 3600)}h ago`;
-  return `${Math.round(diff / 86400)}d ago`;
-}
-
-// ── device story drawer ──────────────────────────────────────────────────
-async function openDeviceStory(mac) {
-  const opener = document.activeElement;
-  try {
-    const story = await fetch(`/api/device/${encodeURIComponent(mac)}`).then(r => r.json());
-    if (!story || story.error) return;
-    _lastFocus = opener;
-    const d = story.device || {};
-    const name = story.known_name || d.hostname || d.vendor || mac;
-    $("#device-drawer-title").textContent = name;
-
-    const sightings = (story.sightings || []).slice(0, 30);
-    const sightingsHtml = sightings.length
-      ? sightings.map(s => `
-          <div class="dstory-row">
-            <span class="dstory-ts">${escHtml(new Date(s.ts * 1000).toLocaleString())}</span>
-            <span class="dstory-ip">${escHtml(s.ip || "—")}</span>
-            <span class="dstory-lat">${s.latency_ms != null ? escHtml(s.latency_ms) + " ms" : ""}</span>
-          </div>`).join("")
-      : `<div class="empty">No sightings recorded yet.</div>`;
-
-    const alerts = (story.alerts || []).slice(0, 20);
-    const alertsHtml = alerts.length
-      ? alerts.map(a => {
-          const sev = a.severity || "info";
-          const icon = SEV_ICON[sev] || SEV_ICON.info;
-          return `
-            <div class="dstory-alert sev-${escHtml(sev)}">
-              <div class="dstory-alert-head"><span class="dstory-alert-icon">${icon}</span><strong>${escHtml(a.title)}</strong></div>
-              <div class="dstory-alert-msg">${escHtml(a.message)}</div>
-              <div class="dstory-alert-ts">${escHtml(new Date(a.ts * 1000).toLocaleString())}${a.acknowledged ? " · acknowledged" : ""}</div>
-            </div>`;
-        }).join("")
-      : `<div class="empty">No alerts triggered by this device.</div>`;
-
-    const ports = (d.ports || []).length
-      ? (d.ports || []).map(p => `<span class="port-chip${RISKY_PORTS.has(p) ? " risky" : ""}">${p}</span>`).join("")
-      : `<span class="empty-inline">No ports observed open.</span>`;
-
-    const wan = (story.wan_exposed || []).length
-      ? (story.wan_exposed || []).map(m => `<div class="dstory-wan">${SEV_ICON.warning} External port ${escHtml(m.external_port)}/${escHtml(m.protocol)} forwarded to internal port ${escHtml(m.internal_port)}</div>`).join("")
-      : "";
-
-    const routerKind = (STATE.settings && STATE.settings.router_kind) || "none";
-    const blockButton = (routerKind === "none" || d.me)
-      ? ""
-      : `<button class="btn btn-danger" id="router-block-mac" data-mac="${escHtml(d.mac)}">Block on router</button>
-         <button class="btn" id="router-unblock-mac" data-mac="${escHtml(d.mac)}">Unblock</button>`;
-
-    $("#device-drawer-body").innerHTML = `
-      ${blockButton ? `<div class="dstory-router-actions">${blockButton}<span class="dstory-router-status" id="dstory-router-status"></span></div>` : ""}
-      <h3>Identity</h3>
-      <dl class="dstory-meta">
-        <dt>IP</dt><dd>${escHtml(d.ip || "—")}</dd>
-        <dt>MAC</dt><dd>${escHtml(d.mac || "—")}</dd>
-        <dt>Vendor</dt><dd>${escHtml(d.vendor || "—")}</dd>
-        <dt>Type</dt><dd>${escHtml(d.device_type || "unknown")} (${Math.round((d.type_confidence || 0) * 100)}% confidence)</dd>
-        <dt>First seen</dt><dd>${escHtml(d.first_seen ? new Date(d.first_seen * 1000).toLocaleString() : "—")}</dd>
-        <dt>Last seen</dt><dd>${escHtml(d.last_seen ? new Date(d.last_seen * 1000).toLocaleString() : "—")}</dd>
-        <dt>Times seen</dt><dd>${escHtml(d.seen_count || 0)}</dd>
-        <dt>Known</dt><dd>${story.is_known ? `<strong>${escHtml(story.known_name || "yes")}</strong>` : "no"}</dd>
-      </dl>
-      ${wan}
-      <h3>Ports</h3>
-      <div class="dc-ports">${ports}</div>
-      <h3>Recent sightings (${sightings.length})</h3>
-      <div class="dstory-list">${sightingsHtml}</div>
-      ${renderBandwidthBlock(story.bandwidth || [])}
-      ${renderDnsBlock(story.dns || [])}
-      <h3>Alerts triggered (${alerts.length})</h3>
-      <div class="dstory-list">${alertsHtml}</div>
-    `;
-
-    $("#device-drawer").hidden = false;
-    $("#drawer-scrim").hidden = false;
-    _syncModalState();
-    $("#device-drawer-close").focus();
-
-    const wireRouter = (sel, path, verb) =>
-      document.getElementById(sel)?.addEventListener("click", async (e) => {
-        const btn = e.currentTarget;
-        const status = $("#dstory-router-status");
-        const mac = btn.dataset.mac;
-        if (verb === "block" && !confirm(`Block ${mac} on your router? They'll be kicked off the WiFi immediately.`)) return;
-        status.textContent = `${verb}ing…`;
-        const r = await api(path, { mac });
-        status.textContent = r.ok ? `${verb}ed ✓` : `${verb} failed: ${r.error || "unknown"}`;
-      });
-    wireRouter("router-block-mac",   "/api/router/block",   "block");
-    wireRouter("router-unblock-mac", "/api/router/unblock", "unblock");
-  } catch (e) { /* swallow */ }
-}
-function fmtBytes(n) {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
-  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
-}
-
-function renderBandwidthBlock(samples) {
-  if (!samples.length) {
-    return `<h3>Bandwidth (last hour)</h3>
-            <div class="empty">No data yet — bandwidth monitoring requires the passive sniffer (Settings → Sniffer status).</div>`;
-  }
-  const totalIn  = samples.reduce((s, r) => s + (r.bytes_in  || 0), 0);
-  const totalOut = samples.reduce((s, r) => s + (r.bytes_out || 0), 0);
-  const max = Math.max(...samples.map(r => Math.max(r.bytes_in, r.bytes_out)), 1);
-  const bars = samples.slice(-60).map(r => {
-    const inH  = Math.max(2, Math.round((r.bytes_in  / max) * 36));
-    const outH = Math.max(2, Math.round((r.bytes_out / max) * 36));
-    return `<span class="bw-pair" title="${new Date(r.ts * 1000).toLocaleTimeString()}: in ${fmtBytes(r.bytes_in)} / out ${fmtBytes(r.bytes_out)}">
-              <span class="bw-bar bw-in"  style="height:${inH}px"></span>
-              <span class="bw-bar bw-out" style="height:${outH}px"></span>
-            </span>`;
-  }).join("");
-  return `<h3>Bandwidth (last hour)</h3>
-          <div class="bw-summary">Down: <strong>${fmtBytes(totalIn)}</strong>  ·  Up: <strong>${fmtBytes(totalOut)}</strong></div>
-          <div class="bw-chart">${bars}</div>`;
-}
-
-function renderDnsBlock(queries) {
-  if (!queries.length) {
-    return `<h3>DNS lookups</h3>
-            <div class="empty">No DNS logged for this device. Requires the passive sniffer.</div>`;
-  }
-  const rows = queries.slice(0, 25).map(q => `
-    <div class="dstory-row">
-      <span class="dstory-ts">${escHtml(new Date(q.ts * 1000).toLocaleString())}</span>
-      <span class="dstory-ip">${escHtml(q.qname)}</span>
-    </div>`).join("");
-  return `<h3>DNS lookups (${queries.length})</h3>
-          <div class="dstory-list">${rows}</div>`;
-}
-
-function closeDeviceDrawer() {
-  $("#device-drawer").hidden = true;
-  if ($("#alert-drawer").hidden) $("#drawer-scrim").hidden = true;
-  _syncModalState();
-  _restoreFocus();
-}
-$("#device-drawer-close").addEventListener("click", closeDeviceDrawer);
-$("#drawer-scrim").addEventListener("click", closeDeviceDrawer);
-
-// Click anywhere on a device card (outside its buttons) to open the story.
-function _macFromCard(card) {
-  return card.querySelector("[data-mac]")?.dataset.mac
-       || card.querySelector(".dc-name-sub")?.textContent.match(/[0-9A-F:]{17}/)?.[0];
-}
-$("#device-grid").addEventListener("click", (e) => {
-  if (e.target.closest("[data-action], button, input, select")) return;
-  const card = e.target.closest(".device-card");
-  if (!card) return;
-  const mac = _macFromCard(card);
-  if (mac) openDeviceStory(mac);
-});
-// Keyboard: Enter/Space on a focused card opens the story (cards are
-// tabindex=0). The guard skips inner action buttons, which handle themselves.
-$("#device-grid").addEventListener("keydown", (e) => {
-  if (e.key !== "Enter" && e.key !== " ") return;
-  if (e.target.closest("[data-action], button, input, select")) return;
-  const card = e.target.closest(".device-card");
-  if (!card) return;
-  e.preventDefault();
-  const mac = _macFromCard(card);
-  if (mac) openDeviceStory(mac);
-});
-
-// ── onboarding tour ──────────────────────────────────────────────────────
-const TOUR_STEPS = [
-  {
-    title: "Welcome to Inglorious Network Scanner",
-    body:  "INS continuously watches everything on your WiFi and tells you in plain English when something deserves attention. Three quick things before you dive in.",
-  },
-  {
-    title: "Your Network Health Score",
-    body:  "The big number on the Overview tab is a 0–100 read of how safe your network looks right now. 100 means all clear; anything lower tells you exactly what to fix and by how much it would help.",
-  },
-  {
-    title: "Triage your unknown devices",
-    body:  "The Triage tab queues every device you haven't named yet. Spend two minutes naming the ones you recognize (your phone, your TV, the printer) so future joins of those devices stop worrying you. If you don't recognize one — change your WiFi password and remove it from the router.",
-  },
-];
-let TOUR_INDEX = 0;
-function showOnboardingIfNeeded() {
-  if (!STATE || !STATE.settings) return;
-  if (STATE.settings.first_run_done) return;
-  if (!$("#onboarding").hidden) return;
-  TOUR_INDEX = 0;
-  renderTourStep();
-  $("#onboarding").hidden = false;
-  _syncModalState();
-  $("#onboarding-next").focus();
-}
-function renderTourStep() {
-  const step = TOUR_STEPS[TOUR_INDEX];
-  $("#onboarding-step").innerHTML =
-    `<h2>${escHtml(step.title)}</h2><p>${escHtml(step.body)}</p>`;
-  $("#onboarding-pips").innerHTML = TOUR_STEPS
-    .map((_, i) => `<span class="pip ${i === TOUR_INDEX ? "active" : ""}"></span>`).join("");
-  $("#onboarding-next").textContent =
-    TOUR_INDEX === TOUR_STEPS.length - 1 ? "Got it" : "Next";
-}
-async function finishTour() {
-  $("#onboarding").hidden = true;
-  _syncModalState();
-  await api("/api/settings/save", { first_run_done: "1" });
-  refresh();
-}
-$("#onboarding-next").addEventListener("click", () => {
-  if (TOUR_INDEX < TOUR_STEPS.length - 1) {
-    TOUR_INDEX++;
-    renderTourStep();
-  } else {
-    finishTour();
-  }
-});
-$("#onboarding-skip").addEventListener("click", finishTour);
-
-// ── settings (voice / shortcuts) ─────────────────────────────────────────
+// ── settings: voice / shortcuts / keep-alive / sniffer ────────────────────
 function paintSettings() {
   const s = (STATE.settings || {});
   const voiceEl = $("#setting-voice");
@@ -1180,37 +1104,37 @@ function paintSettings() {
   if (newEl   && document.activeElement !== newEl)   newEl.value     = s.shortcut_on_new_device || "";
   if (altEl   && document.activeElement !== altEl)   altEl.value     = s.shortcut_on_alert || "";
   if (kaEl    && document.activeElement !== kaEl)    kaEl.checked    = !!s.keep_alive;
-
   const snEl = $("#sniffer-status");
   if (snEl) {
     const sn = STATE.sniffer || {};
     if (sn.running) {
-      snEl.textContent = `✓ Running — ${sn.packets || 0} packets captured`;
+      snEl.textContent = `Running: ${(sn.packets || 0).toLocaleString()} packets observed`;
     } else if (sn.reason) {
-      snEl.textContent = `✗ Not active — ${sn.reason}`;
+      snEl.textContent = `Not active: ${sn.reason}`;
     } else {
-      snEl.textContent = "✗ Not active — run tools/enable_sniffer.sh with sudo, then restart INS";
+      snEl.textContent = "Not active. Run tools/enable_sniffer.sh with sudo, then restart INS.";
     }
   }
+  paintRouterSettings();
 }
 
 $("#keep-alive-save")?.addEventListener("click", async () => {
   const status = $("#keep-alive-status");
   status.textContent = "Applying…";
   // Applying keep-alive reloads the LaunchAgent, which briefly restarts INS —
-  // the response may arrive just before the socket drops, or the socket may
-  // drop first. Treat a dropped connection as "restarting", not an error.
+  // a dropped socket here means "restarting", not failure.
   try {
     const r = await fetch("/api/settings/save", {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({ keep_alive: $("#setting-keep-alive").checked ? "1" : "0" }),
     }).then(r => r.json());
-    status.textContent = r.ok ? "Applied ✓ — INS is restarting…" : `✗ ${r.error || "failed"}`;
+    status.textContent = r.ok ? "Applied. INS is restarting…" : `Failed: ${r.error || "unknown"}`;
   } catch {
-    status.textContent = "Applied — INS is restarting…";
+    status.textContent = "Applied. INS is restarting…";
   }
   setTimeout(() => { status.textContent = ""; }, 4000);
 });
+
 $("#settings-save")?.addEventListener("click", async () => {
   const status = $("#settings-status");
   status.textContent = "Saving…";
@@ -1219,14 +1143,12 @@ $("#settings-save")?.addEventListener("click", async () => {
     shortcut_on_new_device: $("#setting-shortcut-new").value.trim(),
     shortcut_on_alert:      $("#setting-shortcut-alert").value.trim(),
   });
-  status.textContent = "Saved ✓";
+  status.textContent = "Saved";
   setTimeout(() => { status.textContent = ""; }, 1500);
   refresh();
 });
 
-// ── remote access (iOS companion) ─────────────────────────────────────────
-// Fetched on demand (when the Settings tab opens and after a change), not on
-// every tick — /api/remote carries the token and is loopback-only.
+// ── settings: remote access ───────────────────────────────────────────────
 async function loadRemoteAccess() {
   if (!document.getElementById("setting-remote")) return;
   try {
@@ -1252,10 +1174,10 @@ document.getElementById("setting-remote")?.addEventListener("change", async (e) 
     const info = await api("/api/remote", { enabled });
     renderRemoteAccess(info);
     status.textContent = enabled
-      ? `On — reachable at ${info.url || "your LAN IP"}`
-      : "Off — this Mac only.";
+      ? `On: reachable at ${info.url || "your LAN IP"}`
+      : "Off: this Mac only.";
   } catch {
-    status.textContent = "Couldn't apply — try again.";
+    status.textContent = "Couldn't apply. Try again.";
   }
   setTimeout(() => { status.textContent = ""; }, 5000);
 });
@@ -1263,7 +1185,7 @@ document.getElementById("remote-copy")?.addEventListener("click", async () => {
   const token = $("#remote-token")?.textContent || "";
   const status = $("#remote-status");
   try { await navigator.clipboard.writeText(token); status.textContent = "Token copied."; }
-  catch { status.textContent = "Copy failed — select the token and copy manually."; }
+  catch { status.textContent = "Copy failed. Select the token and copy manually."; }
   setTimeout(() => { status.textContent = ""; }, 3000);
 });
 document.getElementById("remote-regen")?.addEventListener("click", async () => {
@@ -1273,11 +1195,11 @@ document.getElementById("remote-regen")?.addEventListener("click", async () => {
   try {
     renderRemoteAccess(await api("/api/remote/regenerate", {}));
     status.textContent = "New token generated.";
-  } catch { status.textContent = "Failed — try again."; }
+  } catch { status.textContent = "Failed. Try again."; }
   setTimeout(() => { status.textContent = ""; }, 3000);
 });
 
-// ── router config UI ───────────────────────────────────────────────────────
+// ── settings: router ──────────────────────────────────────────────────────
 function paintRouterSettings() {
   const s = (STATE.settings || {});
   const kind = $("#router-kind");
@@ -1293,20 +1215,14 @@ function paintRouterSettings() {
   }
   const vtls = $("#router-verify-tls");
   if (vtls && document.activeElement !== vtls) vtls.checked = !!s.router_verify_tls;
-  // Show / hide kind-specific rows.
-  const k = (s.router_kind || "none");
-  document.querySelectorAll("[data-router-unifi]").forEach(el =>
-    el.hidden = (k !== "unifi"));
-  document.querySelectorAll("[data-router-openwrt]").forEach(el =>
-    el.hidden = (k !== "openwrt"));
+  applyRouterKindVisibility(s.router_kind || "none");
 }
-$("#router-kind")?.addEventListener("change", () => {
-  const k = $("#router-kind").value;
-  document.querySelectorAll("[data-router-unifi]").forEach(el =>
-    el.hidden = (k !== "unifi"));
-  document.querySelectorAll("[data-router-openwrt]").forEach(el =>
-    el.hidden = (k !== "openwrt"));
-});
+function applyRouterKindVisibility(k) {
+  $$("[data-router-unifi]").forEach(el => el.hidden = (k !== "unifi"));
+  $$("[data-router-openwrt]").forEach(el => el.hidden = (k !== "openwrt"));
+}
+$("#router-kind")?.addEventListener("change", () =>
+  applyRouterKindVisibility($("#router-kind").value));
 $("#router-save")?.addEventListener("click", async () => {
   const status = $("#router-status");
   status.textContent = "Saving…";
@@ -1323,7 +1239,7 @@ $("#router-save")?.addEventListener("click", async () => {
   if (pwd) body.router_pass = pwd;
   await api("/api/settings/save", body);
   $("#router-pass").value = "";
-  status.textContent = "Saved ✓";
+  status.textContent = "Saved";
   setTimeout(() => { status.textContent = ""; }, 1500);
   refresh();
 });
@@ -1331,25 +1247,13 @@ $("#router-test")?.addEventListener("click", async () => {
   const status = $("#router-status");
   status.textContent = "Testing…";
   const r = await fetch("/api/router/test", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"}).then(r => r.json());
-  status.textContent = r.ok ? `✓ ${r.message}` : `✗ ${r.message}`;
+  status.textContent = r.ok ? `Connected: ${r.message}` : `Failed: ${r.message}`;
 });
-const _prev_paintSettings_router = paintSettings;
-paintSettings = function() { _prev_paintSettings_router(); paintRouterSettings(); };
 
-// Add settings paint to the refresh chain.
-const _origPaintHook = paintHook;
-paintHook = function() { _origPaintHook(); paintSettings(); };
-
-// ── SSE live updates ─────────────────────────────────────────────────────
-// Subscribe to the server-side event bus so dashboard updates feel instant
-// instead of waiting on the polling tick. We KEEP a 30s polling fallback in
-// case the SSE connection drops (corporate proxies sometimes kill long
-// HTTP requests after a minute or two).
-let SSE_STATE = "connecting";   // "live" | "offline"
+// ── SSE live updates ──────────────────────────────────────────────────────
+let SSE_STATE = "connecting";   // "live" | "offline" | "polling"
 
 function startSSE() {
-  // No EventSource (or it throws): live push isn't available — reflect that
-  // honestly instead of leaving the pill on a misleading pulsing green "live".
   if (typeof EventSource === "undefined") { SSE_STATE = "polling"; updateLivePill(); return; }
   try {
     const es = new EventSource("/api/stream");
@@ -1362,25 +1266,18 @@ function startSSE() {
     es.addEventListener("device.vendor_changed", onEvent);
     es.onopen = () => { SSE_STATE = "live"; updateLivePill(); };
     es.onerror = () => {
-      // EventSource auto-retries transient drops (readyState CONNECTING). Only
-      // surface "offline" once it has actually given up (CLOSED), so the pill
-      // doesn't flicker amber on every routine reconnect.
       if (es.readyState === EventSource.CLOSED) { SSE_STATE = "offline"; updateLivePill(); }
     };
   } catch (e) { SSE_STATE = "polling"; updateLivePill(); }
 }
 
-// Reflect live-update health in the header pill: green "live" by default,
-// amber "stale" when the last scan is older than expected, red "offline" when
-// the event stream has dropped. Purely client-side — no new network calls.
 function updateLivePill() {
-  const pill = document.querySelector(".live-pill");
+  const pill = $(".live-pill");
   if (!pill) return;
   let cls = "", label = "live";
   const epoch = STATE && STATE.last_scan_epoch;
   const err   = STATE && STATE.last_scan_error;
   if (err && (!epoch || err >= epoch)) {
-    // The latest scan attempt failed more recently than the last success.
     cls = "is-offline"; label = "scan error";
   } else if (SSE_STATE === "offline") {
     cls = "is-offline"; label = "offline";
@@ -1392,13 +1289,14 @@ function updateLivePill() {
   }
   pill.classList.toggle("is-stale",   cls === "is-stale");
   pill.classList.toggle("is-offline", cls === "is-offline");
-  if (pill.lastChild) pill.lastChild.textContent = " " + label;
+  const lbl = pill.querySelector(".live-label");
+  if (lbl) lbl.textContent = label;
 }
 
-// ── Wi-Fi neighbor survey ────────────────────────────────────────────────
+// ── Wi-Fi neighbor survey ─────────────────────────────────────────────────
 function rssiKlass(r) {
   if (r >= -55) return "strong";
-  if (r >= -75) return "weak";
+  if (r >= -75) return "";
   return "bad";
 }
 function renderWifiResults(neighbors) {
@@ -1409,19 +1307,18 @@ function renderWifiResults(neighbors) {
     return;
   }
   const rows = neighbors.map(n => `
-    <div class="wh-row${n.is_current ? " current" : ""}">
-      <div class="wh-ssid"><b>${escHtml(n.ssid || "(hidden)")}</b>${n.is_current ? '<span class="you">connected</span>' : ""}</div>
-      <div class="wh-bssid">${escHtml(n.bssid || "—")}</div>
-      <div class="wh-band">${escHtml(n.band || "—")}</div>
-      <div class="wh-channel">${n.channel || "—"}</div>
-      <div class="wh-rssi ${rssiKlass(n.rssi)}">${n.rssi} dBm</div>
-      <div class="wh-sec">${escHtml(n.security || "—")}</div>
+    <div class="wifi-row${n.is_current ? " current" : ""}">
+      <span class="wifi-ssid">${escHtml(n.ssid || "(hidden)")}${n.is_current ? '<span class="you">connected</span>' : ""}</span>
+      <span class="wifi-bssid">${escHtml(n.bssid || "—")}</span>
+      <span class="wifi-band">${escHtml(n.band || "—")}</span>
+      <span class="wifi-ch">${n.channel || "—"}</span>
+      <span class="wifi-rssi ${rssiKlass(n.rssi)}">${n.rssi} dBm</span>
+      <span class="wifi-sec">${escHtml(n.security || "—")}</span>
     </div>`).join("");
   list.innerHTML = `
     <div class="wh-head">
-      <div>SSID</div><div>BSSID</div><div>Band</div><div>Ch</div><div>RSSI</div><div>Security</div>
+      <span>Network</span><span>BSSID</span><span>Band</span><span>Ch</span><span>Signal</span><span>Security</span>
     </div>${rows}`;
-  // Channel-occupancy chart per band — count strongest neighbor per channel.
   const bands = { "2.4 GHz": [1,2,3,4,5,6,7,8,9,10,11,12,13],
                   "5 GHz":   [36,40,44,48,52,56,60,64,100,104,108,112,116,120,124,128,132,136,140,149,153,157,161,165] };
   const channels = $("#wifi-channels");
@@ -1432,7 +1329,7 @@ function renderWifiResults(neighbors) {
     });
     const bars = chans.map(ch => {
       const r = occ[ch];
-      const h = r != null ? Math.max(8, Math.min(60, 64 + r)) : 6; // RSSI -64→0, -4→60
+      const h = r != null ? Math.max(8, Math.min(64, 68 + r)) : 5;
       const cls = r == null ? "empty" : (neighbors.some(n => n.channel === ch && n.is_current) ? "active" : "");
       return `<div class="wifi-bar ${cls}" style="height:${h}px" title="ch ${ch}${r != null ? ` · best ${r} dBm` : " · idle"}"><span class="ch-label">${ch}</span></div>`;
     }).join("");
@@ -1460,7 +1357,7 @@ async function runWifiScan() {
 }
 document.getElementById("wifi-scan")?.addEventListener("click", runWifiScan);
 
-// ── header rescan button ─────────────────────────────────────────────────
+// ── header rescan ─────────────────────────────────────────────────────────
 const rescanBtn = $("#hdr-rescan");
 if (rescanBtn) {
   rescanBtn.addEventListener("click", async () => {
@@ -1471,7 +1368,7 @@ if (rescanBtn) {
     rescanBtn.disabled = true;
     try {
       await api("/api/rescan", {});
-    } catch { /* surface failure via the status pill, not a noisy alert */ }
+    } catch { /* surfaced via the status pill */ }
     setTimeout(() => {
       rescanBtn.textContent = original;
       rescanBtn.disabled = false;
@@ -1480,9 +1377,7 @@ if (rescanBtn) {
   });
 }
 
-// Keyboard handling for overlays: Tab is trapped within the topmost open dialog
-// (with the background inert), and Escape closes it (onboarding > device drawer
-// > alert drawer) — the standard affordances keyboard users expect.
+// ── keyboard: Tab trap + Escape ───────────────────────────────────────────
 document.addEventListener("keydown", (e) => {
   if (e.key === "Tab") { _trapTab(e); return; }
   if (e.key !== "Escape") return;
@@ -1491,24 +1386,10 @@ document.addEventListener("keydown", (e) => {
   if (!$("#alert-drawer").hidden)    { closeExplainer(); return; }
 });
 
-// Redraw the history chart on window resize (its canvas backing store is sized
-// from clientWidth/clientHeight, so a resize without redraw leaves it blurry
-// until the next data load).
-let _historyResizeTimer = null;
-window.addEventListener("resize", () => {
-  clearTimeout(_historyResizeTimer);
-  _historyResizeTimer = setTimeout(() => {
-    if (CURRENT_TAB === "history") drawHistory();
-  }, 150);
-});
-
 // ── boot ──────────────────────────────────────────────────────────────────
 showTab(CURRENT_TAB);
-setDevicesView(DEVICE_VIEW);   // honor persisted preference; sync toggle UI
 refresh().then(showOnboardingIfNeeded);
 startSSE();
-// Fallback polling — far less frequent now that SSE pushes deltas instantly.
+// Fallback polling — SSE pushes deltas instantly when connected.
 setInterval(refresh, 30000);
-// Refresh the live/stale pill on its own cadence so staleness shows even when
-// no scan events are arriving.
 setInterval(updateLivePill, 15000);
