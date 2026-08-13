@@ -23,6 +23,7 @@ except ImportError:
 
 import rumps
 import actions
+import bonjour
 import classify
 import dashboard
 import detect
@@ -256,6 +257,7 @@ class InsApp(rumps.App):
         self._last_traceback_ts: float = 0.0   # rate-limits scan-failure tracebacks
         self._keep_alive_cache: bool | None = None  # cached LaunchAgent plist read
         self._keep_alive_ts: float = 0.0
+        self._local_ip: str | None = None           # this Mac's LAN IP (for remote-access URL)
 
         # Static menu items
         self._status    = rumps.MenuItem("Not connected")
@@ -282,11 +284,22 @@ class InsApp(rumps.App):
 
         self._build_menu()
 
-        # Start HTTP dashboard
+        # Start HTTP dashboard. Bind to the LAN (0.0.0.0) only if the user has
+        # previously opted into remote access — otherwise loopback-only, so the
+        # "nothing reachable off this machine" default is preserved.
+        lan_enabled = store.get_setting("lan_access_enabled", "0") == "1"
+        lan_token   = store.get_setting("lan_access_token", "") or None
         dashboard.start(store, self._dash_state,
                         on_known_change=self._refresh_devices_and_redraw,
                         on_rescan=self._trigger_scan,
-                        port=DASH_PORT)
+                        on_lan_change=self._on_lan_change,
+                        get_remote_info=self._remote_info,
+                        port=DASH_PORT,
+                        lan_enabled=lan_enabled, lan_token=lan_token)
+        # Publish Bonjour if remote access is already on (so the iOS app can
+        # discover us on this launch, not just after a toggle).
+        if lan_enabled:
+            threading.Thread(target=self._apply_remote_access, daemon=True).start()
 
         # Main-thread timer to safely update NSMenu
         rumps.Timer(self._flush_pending, 0.5).start()
@@ -439,6 +452,48 @@ class InsApp(rumps.App):
             "keep_alive":             self._cached_keep_alive(),
         }
 
+    # ── Remote access (LAN bind + token + Bonjour) ───────────────────────────
+
+    def _remote_info(self) -> dict:
+        """Loopback-only payload the dashboard uses to render the Remote Access
+        card. Includes the LAN token (which is why /api/remote is loopback-only)."""
+        enabled = store.get_setting("lan_access_enabled", "0") == "1"
+        token   = store.get_setting("lan_access_token", "")
+        host    = self._local_ip or ""
+        url     = f"http://{host}:{DASH_PORT}" if host else ""
+        return {
+            "enabled":  enabled,
+            "token":    token,
+            "host":     host,
+            "port":     DASH_PORT,
+            "url":      url,
+            "name":     _local_computer_name() or __app_name__,
+        }
+
+    def _on_lan_change(self):
+        """Fired from the dashboard's /api/remote handler. Rebinding the HTTP
+        server must not happen on the request thread (it would tear the server
+        down mid-response), so apply it on a short-lived worker."""
+        threading.Thread(target=self._apply_remote_access, daemon=True).start()
+
+    def _apply_remote_access(self):
+        """Reconcile the live server + Bonjour with the persisted setting: rebind
+        loopback ⇄ LAN, propagate the current token, and start/stop the Bonjour
+        advert. Idempotent; safe to call at startup and on every toggle."""
+        enabled = store.get_setting("lan_access_enabled", "0") == "1"
+        token   = store.get_setting("lan_access_token", "") or None
+        try:
+            dashboard.set_lan(enabled, token)
+        except Exception:
+            pass
+        try:
+            if enabled:
+                bonjour.publish(_local_computer_name() or __app_name__, port=DASH_PORT)
+            else:
+                bonjour.unpublish()
+        except Exception:
+            pass
+
     def _cached_keep_alive(self) -> bool:
         """Keep-alive reflects the on-disk LaunchAgent plist, which only changes
         when the user toggles it. Cache the parsed value for a few seconds so
@@ -539,6 +594,7 @@ class InsApp(rumps.App):
     def _run_scan(self):
         try:
             iface, local_ip, network = get_wifi_info()
+            self._local_ip = local_ip   # for the remote-access URL shown in Settings
             with self._lock:
                 ssid         = self._ssid
                 use_fallback = self._use_fallback

@@ -377,6 +377,44 @@
       </div>
     </div>
 
+    <div class="pbar"><h2>Remote access (iOS companion)</h2></div>
+    <div class="section">
+      <p class="help">
+        Let the Inglorious Network Scanner iOS app view this Mac's dashboard over
+        your WiFi. <strong>Off by default.</strong> When on, INS listens on your
+        LAN (not just this Mac) and every request must carry the token below —
+        access is <strong>read-only</strong>, so the phone can never change
+        anything. Turn it off to go back to this-Mac-only.
+      </p>
+      <label class="setting-row">
+        <input type="checkbox" id="setting-remote">
+        <span>
+          <strong>Enable remote access</strong> — reachable from other devices on this WiFi
+          <span class="setting-hint">Serves the dashboard on your LAN IP, token-gated and read-only. The iOS app also discovers this Mac automatically via Bonjour.</span>
+        </span>
+      </label>
+      <div id="remote-details" hidden>
+        <div class="setting-row">
+          <label>Address:</label>
+          <code id="remote-url" class="remote-code">—</code>
+        </div>
+        <div class="setting-row">
+          <label>Token:</label>
+          <code id="remote-token" class="remote-code remote-token">—</code>
+          <button class="btn btn-tiny" id="remote-copy">Copy</button>
+          <button class="btn btn-tiny btn-danger" id="remote-regen">Regenerate</button>
+        </div>
+        <p class="help-fine">
+          In the iOS app, enter the address and paste this token (or let it find
+          this Mac via Bonjour). Regenerating immediately disconnects any device
+          using the old token.
+        </p>
+      </div>
+      <div class="setting-row">
+        <span class="settings-status" id="remote-status"></span>
+      </div>
+    </div>
+
     <div class="pbar"><h2>Privacy</h2></div>
     <div class="section privacy-block">
       <p>

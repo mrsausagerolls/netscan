@@ -10,8 +10,10 @@ which means it has to earn your trust before it can be useful.
 - All scan data lives in a local SQLite database under `~/Library/Application
   Support/InglNetScan/ins.db` (when installed as a `.app`) or in `./data/` (when
   run from source).
-- The dashboard binds to `127.0.0.1` only. Nothing INS does is reachable from
-  outside your machine.
+- The dashboard binds to `127.0.0.1` only **by default** — nothing INS does is
+  reachable from outside your machine unless you explicitly turn on *Remote
+  access* (Settings → Remote access), which is off out of the box. See
+  [Remote access](#remote-access-opt-in) below for exactly what that changes.
 - The dashboard loads **no third-party assets** — fonts and all other resources
   are bundled and served from `127.0.0.1`, so opening it makes zero outbound
   requests.
@@ -61,6 +63,34 @@ own domain to `127.0.0.1` to read your scan data cross-origin. On top of that,
 every *mutating* endpoint also requires a same-origin `Origin`/`Referer` header,
 so a webpage in another tab cannot silently install a join hook, mark a device
 as known, or wake a host.
+
+### Remote access (opt-in)
+
+By default the dashboard is loopback-only. Turning on **Settings → Remote
+access** lets the Inglorious Network Scanner iOS companion (and any browser on
+the same WiFi) reach it. When enabled, INS:
+
+- **Binds the LAN interface** (`0.0.0.0:8765`) instead of loopback-only, so the
+  port becomes reachable from other devices on your WiFi. Turning it back off
+  rebinds to loopback and closes that surface.
+- **Requires a bearer token** on *every* request that arrives from a
+  non-loopback address. The token is a 24-byte random value generated on first
+  enable, shown only in the local dashboard, compared in constant time, and
+  regenerable at any time (which instantly disconnects anything using the old
+  one). The local browser on `127.0.0.1` never needs it.
+- **Is strictly read-only over the LAN.** A remote client can read the device
+  list, health score, alerts, and per-device history; it can *not* mark devices
+  known, block, edit the hook, change settings, or read the token/webhook
+  endpoints. Those stay loopback-only, enforced by an explicit read allowlist —
+  a valid token is not enough to mutate anything.
+- **Publishes a Bonjour service** (`_ins._tcp`) so the iOS app can find the Mac
+  without a typed IP. Nothing is published while remote access is off.
+
+What this does **not** do: it is plain HTTP on your LAN (the token travels in
+cleartext to devices on the same network — the same trust boundary as the LAN
+itself), and it is not reachable from the public internet unless you separately
+port-forward it (which INS never does and warns you about if your router has).
+If you don't run the iOS app, leave remote access off.
 
 The join hook stores an arbitrary shell command. Treat that capability the way
 you'd treat your shell history: anyone with access to your Mac account can edit

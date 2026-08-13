@@ -43,7 +43,7 @@ OPTIONS = {
         "scanner", "store", "dashboard", "wol", "updater", "version",
         "classify", "security", "events", "notify", "webhooks",
         "detect", "health", "igd", "sniffer", "routerctl",
-        "launchd_agent", "actions", "threats", "wifi",
+        "launchd_agent", "actions", "threats", "wifi", "bonjour",
     ],
     "excludes": ["tkinter", "unittest", "xmlrpc"],
     # Bundle the dashboard assets (HTML/CSS/JS + self-hosted fonts) into

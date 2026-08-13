@@ -1878,6 +1878,8 @@ def test_webhook_add_rejects_non_http_scheme():
     h = dashboard._Handler.__new__(dashboard._Handler)
     h.store = FakeStore()
     h.on_known_change = None
+    h.client_address = ("127.0.0.1", 9999)   # loopback → normal Host/Origin flow
+    h.command = "POST"
     responses = []
     h._send = lambda code, ctype, b: responses.append((code, b))
     h._ok   = lambda: responses.append((200, b'{"ok":true}'))
@@ -1910,3 +1912,96 @@ def test_igd_redirect_handler_blocks_off_lan_hop():
                            "http://169.254.169.254/latest/")
     with pytest.raises(igd.urllib.error.HTTPError):
         h.redirect_request(None, None, 302, "Found", {}, "http://8.8.8.8/x")
+
+
+# ── remote access: LAN auth gate (dashboard) ─────────────────────────────────
+
+def test_dashboard_is_loopback():
+    import dashboard
+    h = dashboard._Handler.__new__(dashboard._Handler)
+    h.client_address = ("127.0.0.1", 5)
+    assert h._is_loopback()
+    h.client_address = ("::1", 5)
+    assert h._is_loopback()
+    h.client_address = ("192.168.1.50", 5)
+    assert not h._is_loopback()
+
+
+def test_dashboard_lan_token_constant_time_auth():
+    import dashboard
+    h = dashboard._Handler.__new__(dashboard._Handler)
+    dashboard._Handler.lan_token = "s3cr3t-token"
+    h.headers = {"Authorization": "Bearer s3cr3t-token"}
+    assert h._lan_authorized()
+    h.headers = {"Authorization": "Bearer nope"}
+    assert not h._lan_authorized()
+    h.headers = {}
+    assert not h._lan_authorized()
+    dashboard._Handler.lan_token = None            # no token configured → deny all
+    h.headers = {"Authorization": "Bearer s3cr3t-token"}
+    assert not h._lan_authorized()
+
+
+def _lan_handler(method, path, headers, *, enabled=True, token="tok"):
+    import dashboard
+    dashboard._Handler.lan_enabled = enabled
+    dashboard._Handler.lan_token   = token
+    h = dashboard._Handler.__new__(dashboard._Handler)
+    h.command = method
+    h.path = path
+    h.headers = headers
+    h.client_address = ("192.168.1.50", 9999)      # a LAN client
+    sent = []
+    h._send        = lambda code, ctype, b: sent.append(code)
+    h.send_response = lambda code: sent.append(code)
+    h.send_header   = lambda *a, **k: None
+    h.end_headers   = lambda: None
+    return h, sent
+
+
+def test_dashboard_lan_gate_allows_authed_read():
+    h, sent = _lan_handler("GET", "/api/state", {"Authorization": "Bearer tok"})
+    assert h._lan_gate() is True and sent == []
+
+
+def test_dashboard_lan_gate_blocks_post_even_with_token():
+    h, sent = _lan_handler("POST", "/api/known/add", {"Authorization": "Bearer tok"})
+    assert h._lan_gate() is False and 403 in sent      # read-only over LAN
+
+
+def test_dashboard_lan_gate_blocks_non_allowlisted_get():
+    # /api/remote carries the token — must never be reachable from the LAN.
+    h, sent = _lan_handler("GET", "/api/remote", {"Authorization": "Bearer tok"})
+    assert h._lan_gate() is False and 403 in sent
+    h, sent = _lan_handler("GET", "/api/webhooks", {"Authorization": "Bearer tok"})
+    assert h._lan_gate() is False and 403 in sent
+
+
+def test_dashboard_lan_gate_requires_token():
+    h, sent = _lan_handler("GET", "/api/state", {})
+    assert h._lan_gate() is False and 401 in sent
+
+
+def test_dashboard_lan_gate_blocked_when_disabled():
+    h, sent = _lan_handler("GET", "/api/state", {"Authorization": "Bearer tok"}, enabled=False)
+    assert h._lan_gate() is False and 403 in sent
+    # Reset so we don't leave LAN access globally enabled for other tests.
+    import dashboard
+    dashboard._Handler.lan_enabled = False
+    dashboard._Handler.lan_token = None
+
+
+# ── bonjour TXT encoding ─────────────────────────────────────────────────────
+
+def test_bonjour_encode_txt_no_op_without_foundation():
+    import bonjour
+    if bonjour._HAVE_FOUNDATION:
+        blob = bonjour._encode_txt({"path": "/", "v": "1"})
+        assert blob is not None            # produced an NSData TXT blob
+    else:
+        assert bonjour._encode_txt({"path": "/"}) is None
+
+
+def test_bonjour_publish_no_op_without_name():
+    import bonjour
+    assert bonjour.publish("", port=8765) is False    # empty name never publishes

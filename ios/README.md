@@ -32,18 +32,27 @@
 
 ## One-time setup on the INS side (the Mac running INS)
 
-The Mac's dashboard server already binds `127.0.0.1` — that's intentionally
-not reachable from another device on the same WiFi. To use this companion
-app, you'll need to add a LAN-bind option to `dashboard.py` so the phone
-can reach it. That work is **not in this commit**; it's tracked under v2.5
-in `ROADMAP.md`. The scaffold currently expects:
+As of **v2.5** the Mac side is ready:
 
-- `http://<ins-mac>:8765/api/state`   reachable from the phone
-- `http://<ins-mac>:8765/api/stream`  reachable from the phone
-- A Bonjour service published by INS as `_ins._tcp.local`
+1. On the Mac, open the dashboard → **Settings → Remote access** and turn it
+   on. INS then binds your LAN interface, publishes a Bonjour service
+   (`_ins._tcp`), and shows a **token**.
+2. Every request from the phone must carry that token as
+   `Authorization: Bearer <token>`, and remote access is **read-only** — the
+   Mac rejects any write from the LAN. Regenerating the token in Settings
+   disconnects any device using the old one.
 
-Until INS publishes that service (also v2.5), you'll need to enter the
-Mac's IP manually in the app's "Manual host" field.
+Reachable once enabled:
+
+- `http://<ins-mac>:8765/api/state`   (read; needs the Bearer token)
+- `http://<ins-mac>:8765/api/stream`  (read; needs the Bearer token)
+- Bonjour service `_ins._tcp` for automatic discovery
+
+> **iOS-side work still pending (Phase B).** This scaffold does **not** yet send
+> the token or finish Bonjour resolution — `INSClient.resolve()` is still a
+> stub, and no `Authorization` header is attached. Until those land you'll get
+> `401`s. See the parent `ROADMAP.md` v2.5 notes; the server contract above is
+> what the client needs to implement.
 
 ## Build instructions
 

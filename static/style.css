@@ -526,6 +526,16 @@ canvas#history-chart{
   border:1px solid var(--border);
 }
 
+.remote-code{
+  font-family:var(--mono);font-size:12px;background:var(--surface-3);
+  border:1px solid var(--border);border-radius:6px;padding:4px 9px;
+  color:var(--text-2);word-break:break-all;user-select:all;max-width:100%;
+}
+.remote-token{color:var(--accent);}
+#remote-details{
+  margin-top:6px;padding-top:6px;border-top:1px solid var(--border);
+}
+
 .webhook-form{
   display:grid;grid-template-columns:200px 1fr 240px auto;gap:10px;align-items:center;
   background:linear-gradient(180deg, var(--surface-2), var(--surface));

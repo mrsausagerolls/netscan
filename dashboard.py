@@ -8,10 +8,12 @@ Architecture:
     rule is what prevents a malicious webpage from silently installing a hook.
 """
 
+import hmac
 import json
 import mimetypes
 import os
 import queue
+import secrets
 import sys
 import threading
 import time
@@ -23,6 +25,18 @@ from urllib.parse import urlparse, parse_qs
 import events
 
 PORT = 8765
+
+_LOOPBACK = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
+
+# The ONLY endpoints an authenticated LAN client (the iOS companion) may reach.
+# Everything else — mutations, the token-bearing /api/remote endpoints, the
+# webhook list, and the static SPA — stays loopback-only. Keeping this an
+# explicit read allowlist (not a blocklist) means a newly-added endpoint is
+# LAN-invisible by default.
+_LAN_READ_PREFIXES = (
+    "/api/state", "/api/stream", "/api/health", "/api/history",
+    "/api/alerts", "/api/wan_mappings", "/api/device/",
+)
 
 # Reject bodies larger than this on POST — the dashboard only ever sends small
 # JSON control messages, so anything bigger is a mistake or abuse.
@@ -98,8 +112,12 @@ class _Handler(BaseHTTPRequestHandler):
     get_state = None       # callable → dict
     on_known_change = None # callable → triggers menu redraw
     on_rescan = None       # callable → triggers a fresh scan
+    on_lan_change = None    # callable → app re-applies bind + Bonjour
+    get_remote_info = None  # callable → dict (loopback-only remote-access info)
     allowed_origins: set = set()  # populated in start()
     allowed_hosts:   set = set()  # populated in start()
+    lan_enabled: bool = False     # is the LAN listener authorized to serve?
+    lan_token:   str | None = None
 
     # ── auth ──────────────────────────────────────────────────────────────
 
@@ -108,6 +126,49 @@ class _Handler(BaseHTTPRequestHandler):
         if not origin:
             return False
         return any(origin == a or origin.startswith(a + "/") for a in self.allowed_origins)
+
+    def _is_loopback(self) -> bool:
+        """True when the request came in over the loopback interface. The local
+        browser (even when we're bound to 0.0.0.0 for LAN access) always connects
+        from 127.0.0.1, so this cleanly separates the trusted local dashboard from
+        untrusted LAN clients."""
+        addr = getattr(self, "client_address", None)
+        return (addr[0] if addr else "") in _LOOPBACK
+
+    def _lan_authorized(self) -> bool:
+        """A LAN client must present a Bearer token equal to the stored one.
+        Constant-time compare so a timing side-channel can't leak the token."""
+        token = _Handler.lan_token
+        if not token:
+            return False
+        auth = self.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            return False
+        return hmac.compare_digest(auth[len("Bearer "):], token)
+
+    def _lan_gate(self) -> bool:
+        """Authorize a non-loopback request, or send the rejection and return
+        False. LAN access must be enabled, the token must match, the method must
+        be GET, and the path must be in the read allowlist — so the phone can
+        never mutate state or read the token/webhook endpoints even with a valid
+        token."""
+        if not _Handler.lan_enabled:
+            self._send(403, "application/json", b'{"error":"remote access disabled"}')
+            return False
+        if not self._lan_authorized():
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Bearer realm="INS"')
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return False
+        if self.command != "GET":
+            self._send(403, "application/json", b'{"error":"remote access is read-only"}')
+            return False
+        path = urlparse(self.path).path
+        if not any(path == p or path.startswith(p) for p in _LAN_READ_PREFIXES):
+            self._send(403, "application/json", b'{"error":"endpoint not available remotely"}')
+            return False
+        return True
 
     @staticmethod
     def _as_int(v, default: int = 0) -> int:
@@ -133,8 +194,13 @@ class _Handler(BaseHTTPRequestHandler):
     # ── GET ───────────────────────────────────────────────────────────────
 
     def do_GET(self):
-        if not self._host_ok():
-            self._send(403, "application/json", b'{"error":"forbidden host"}')
+        # Loopback (the local browser) keeps the DNS-rebinding Host guard; a LAN
+        # client (the iOS app) is authorized by token + read allowlist instead.
+        if self._is_loopback():
+            if not self._host_ok():
+                self._send(403, "application/json", b'{"error":"forbidden host"}')
+                return
+        elif not self._lan_gate():
             return
 
         parsed = urlparse(self.path)
@@ -169,6 +235,15 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, "application/json",
                        json.dumps(self.store.wan_mappings()).encode())
             return
+        if path == "/api/remote":
+            # Carries the LAN token — loopback only (the LAN read allowlist
+            # already excludes it, but guard explicitly).
+            if not self._is_loopback() or not self.get_remote_info:
+                self._send(403, "application/json", b'{"error":"forbidden"}')
+                return
+            self._send(200, "application/json",
+                       json.dumps(self.get_remote_info()).encode())
+            return
         if path.startswith("/api/device/"):
             self._send_device_story(path[len("/api/device/"):])
             return
@@ -199,11 +274,16 @@ class _Handler(BaseHTTPRequestHandler):
     # ── POST ──────────────────────────────────────────────────────────────
 
     def do_POST(self):
-        if not self._host_ok():
-            self._send(403, "application/json", b'{"error":"forbidden host"}')
-            return
-        if not self._origin_ok():
-            self._send(403, "application/json", b'{"error":"forbidden origin"}')
+        # Mutations are loopback-only. A LAN client can never POST — _lan_gate
+        # rejects any non-GET from a non-loopback address even with a valid token.
+        if self._is_loopback():
+            if not self._host_ok():
+                self._send(403, "application/json", b'{"error":"forbidden host"}')
+                return
+            if not self._origin_ok():
+                self._send(403, "application/json", b'{"error":"forbidden origin"}')
+                return
+        elif not self._lan_gate():
             return
 
         path = urlparse(self.path).path
@@ -302,6 +382,25 @@ class _Handler(BaseHTTPRequestHandler):
                 body.get("mac", ""), bool(body.get("no_probe", False))
             )
             self._ok()
+            return
+        if path == "/api/remote":
+            # Enable/disable LAN remote access (loopback-only; LAN can't POST).
+            enabled = bool(body.get("enabled", False))
+            self.store.set_setting("lan_access_enabled", "1" if enabled else "0")
+            if enabled and not self.store.get_setting("lan_access_token", ""):
+                self.store.set_setting("lan_access_token", secrets.token_urlsafe(24))
+            if self.on_lan_change:
+                self.on_lan_change()
+            info = self.get_remote_info() if self.get_remote_info else {"ok": True}
+            self._send(200, "application/json", json.dumps(info).encode())
+            return
+        if path == "/api/remote/regenerate":
+            # Rotate the token; the old one stops working once set_lan applies it.
+            self.store.set_setting("lan_access_token", secrets.token_urlsafe(24))
+            if self.on_lan_change:
+                self.on_lan_change()
+            info = self.get_remote_info() if self.get_remote_info else {"ok": True}
+            self._send(200, "application/json", json.dumps(info).encode())
             return
         if path == "/api/triage/bulk_known":
             for entry in body.get("entries", []):
@@ -473,11 +572,41 @@ class _ThreadedServer(ThreadingMixIn, _Server):
         super().handle_error(request, client_address)
 
 
-def start(store, get_state, on_known_change=None, on_rescan=None, port: int = PORT):
+# Module-level server handle so set_lan() can rebind loopback ⇄ LAN at runtime.
+_srv_lock  = threading.Lock()
+_srv       = None
+_srv_host  = "127.0.0.1"
+_srv_port  = PORT
+
+
+def _bind_server(host: str, port: int):
+    """Create + start a serving thread bound to (host, port), retrying briefly
+    while the previous socket lingers in TIME_WAIT."""
+    deadline = time.monotonic() + 15
+    while True:
+        try:
+            server = _ThreadedServer((host, port), _Handler)
+            break
+        except OSError:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(1)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def start(store, get_state, on_known_change=None, on_rescan=None,
+          on_lan_change=None, get_remote_info=None, port: int = PORT,
+          lan_enabled: bool = False, lan_token: str | None = None):
+    global _srv, _srv_host, _srv_port
     _Handler.store            = store
     _Handler.get_state        = get_state
     _Handler.on_known_change  = on_known_change
     _Handler.on_rescan        = on_rescan
+    _Handler.on_lan_change    = on_lan_change
+    _Handler.get_remote_info  = get_remote_info
+    _Handler.lan_enabled      = bool(lan_enabled)
+    _Handler.lan_token        = lan_token or None
     _Handler.allowed_origins  = {
         f"http://127.0.0.1:{port}",
         f"http://localhost:{port}",
@@ -489,18 +618,36 @@ def start(store, get_state, on_known_change=None, on_rescan=None, port: int = PO
 
     _wire_event_bus_once()
 
-    deadline = time.monotonic() + 15
-    while True:
-        try:
-            server = _ThreadedServer(("127.0.0.1", port), _Handler)
-            break
-        except OSError:
-            if time.monotonic() > deadline:
-                raise
-            time.sleep(1)
-
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    # Bind 0.0.0.0 only when remote access is on at startup; otherwise stay
+    # loopback-only so the "nothing is reachable off this machine" default holds.
+    host = "0.0.0.0" if lan_enabled else "127.0.0.1"
+    with _srv_lock:
+        _srv = _bind_server(host, port)
+        _srv_host, _srv_port = host, port
     return port
+
+
+def set_lan(enabled: bool, token: str | None):
+    """Apply a change to remote-access state. Updates the auth token/enabled flag
+    live, and rebinds the listener loopback ⇄ 0.0.0.0 only when the reachable
+    surface actually changes. Safe to call from a worker thread (never the
+    serving thread). Returns the host now bound."""
+    global _srv, _srv_host
+    _Handler.lan_enabled = bool(enabled)
+    _Handler.lan_token   = token or None
+    desired = "0.0.0.0" if enabled else "127.0.0.1"
+    with _srv_lock:
+        if _srv is None or desired == _srv_host:
+            return _srv_host
+        old = _srv
+        try:
+            old.shutdown()
+            old.server_close()
+        except Exception:
+            pass
+        _srv = _bind_server(desired, _srv_port)
+        _srv_host = desired
+    return _srv_host
 
 
 # Fallback if static/index.html went missing — keeps the dashboard at least loadable.

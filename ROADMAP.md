@@ -67,19 +67,22 @@ tested by author; users open in Xcode 15+, follow ios/README.md.** No
 INS-side runtime changes shipped in this version — v2.5 work below is
 what's needed to make the scaffold actually connect.
 
-## Next — v2.5 (not started)
+## v2.5 — remote access (Phase A shipped)
 
-- **LAN-bind dashboard option** — current INS binds `127.0.0.1` only by
-  design. Add an opt-in setting that binds the LAN interface so the iOS
-  scaffold (and Mac browsers on other devices) can reach it. Must require
-  an auth token, not just origin checks — the same-origin guard is
-  pointless once we're listening on a non-loopback interface.
-- **Bonjour service publish** — register `_ins._tcp` on the WiFi adapter
-  so the iOS app can discover the Mac without a manual IP. Tiny change
-  using `pyobjc-framework-Foundation`'s NSNetService, or `zeroconf` pkg.
-- **Signed + notarized .app + DMG.** The single biggest trust win — fixes
-  the macOS notification attribution (currently "Script Editor") and lets
-  the curl-installer become optional.
+- **LAN-bind dashboard option** — ✅ **shipped.** Opt-in *Settings → Remote
+  access* binds the LAN interface (`0.0.0.0`), gated by a random bearer token
+  (constant-time compared, regenerable) and restricted to a **read-only**
+  endpoint allowlist — a valid token can't mutate state or read the
+  token/webhook endpoints. Off by default; turning it off rebinds to loopback.
+- **Bonjour service publish** — ✅ **shipped.** `bonjour.py` advertises
+  `_ins._tcp` via `NSNetService` (bundled pyobjc, no new dep) whenever remote
+  access is on, so the iOS app can discover the Mac without a typed IP.
+- **iOS client (Phase B)** — pending: finish `INSClient.resolve()` and send the
+  `Authorization: Bearer` token (store it in Keychain). Server contract is done.
+- **Signed + notarized .app + DMG (Phase C)** — parked until there's an Apple
+  Developer account. The single biggest trust win — fixes the macOS
+  notification attribution (currently "Script Editor") and lets the
+  curl-installer become optional.
 - **Homebrew cask** — `brew install --cask inglorious-network-scanner`.
 - **Eero router-block** via Cognito-auth API. Brittle (Amazon rotates
   challenge formats); deferred until v2.5 has integration tests against

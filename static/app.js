@@ -138,7 +138,8 @@ function showTab(name) {
     else        b.removeAttribute("aria-current");
   });
   $$(".tab").forEach(t => t.hidden = t.id !== `tab-${name}`);
-  if (name === "history") loadHistory();
+  if (name === "history")  loadHistory();
+  if (name === "settings") loadRemoteAccess();
   // Paint the now-visible tab's body immediately — refresh() only paints the
   // active tab on each tick, so a freshly-shown tab needs a paint here.
   if (STATE) paintActiveTab();
@@ -1221,6 +1222,59 @@ $("#settings-save")?.addEventListener("click", async () => {
   status.textContent = "Saved ✓";
   setTimeout(() => { status.textContent = ""; }, 1500);
   refresh();
+});
+
+// ── remote access (iOS companion) ─────────────────────────────────────────
+// Fetched on demand (when the Settings tab opens and after a change), not on
+// every tick — /api/remote carries the token and is loopback-only.
+async function loadRemoteAccess() {
+  if (!document.getElementById("setting-remote")) return;
+  try {
+    const r = await fetch("/api/remote");
+    if (r.ok) renderRemoteAccess(await r.json());
+  } catch { /* ignore */ }
+}
+function renderRemoteAccess(info) {
+  if (!info) return;
+  const toggle = $("#setting-remote");
+  if (!toggle) return;
+  if (document.activeElement !== toggle) toggle.checked = !!info.enabled;
+  const details = $("#remote-details");
+  if (details) details.hidden = !info.enabled;
+  const urlEl = $("#remote-url");   if (urlEl) urlEl.textContent = info.url || "—";
+  const tokEl = $("#remote-token"); if (tokEl) tokEl.textContent = info.token || "—";
+}
+document.getElementById("setting-remote")?.addEventListener("change", async (e) => {
+  const status = $("#remote-status");
+  const enabled = e.currentTarget.checked;
+  status.textContent = enabled ? "Enabling…" : "Disabling…";
+  try {
+    const info = await api("/api/remote", { enabled });
+    renderRemoteAccess(info);
+    status.textContent = enabled
+      ? `On — reachable at ${info.url || "your LAN IP"}`
+      : "Off — this Mac only.";
+  } catch {
+    status.textContent = "Couldn't apply — try again.";
+  }
+  setTimeout(() => { status.textContent = ""; }, 5000);
+});
+document.getElementById("remote-copy")?.addEventListener("click", async () => {
+  const token = $("#remote-token")?.textContent || "";
+  const status = $("#remote-status");
+  try { await navigator.clipboard.writeText(token); status.textContent = "Token copied."; }
+  catch { status.textContent = "Copy failed — select the token and copy manually."; }
+  setTimeout(() => { status.textContent = ""; }, 3000);
+});
+document.getElementById("remote-regen")?.addEventListener("click", async () => {
+  if (!confirm("Regenerate the token? Any device using the current one is disconnected immediately.")) return;
+  const status = $("#remote-status");
+  status.textContent = "Regenerating…";
+  try {
+    renderRemoteAccess(await api("/api/remote/regenerate", {}));
+    status.textContent = "New token generated.";
+  } catch { status.textContent = "Failed — try again."; }
+  setTimeout(() => { status.textContent = ""; }, 3000);
 });
 
 // ── router config UI ───────────────────────────────────────────────────────
